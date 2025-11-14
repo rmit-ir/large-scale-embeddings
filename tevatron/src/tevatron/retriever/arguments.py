@@ -171,4 +171,8 @@ class TevatronTrainingArguments(TrainingArguments):
     gc_q_chunk_size: int = field(default=4)
     gc_p_chunk_size: int = field(default=32)
     inference_save_step: int = field(default=50)
-
+    
+    device_id: Optional[int] = field(
+        default=None, 
+        metadata={"help": "Specify GPU device number for encoding. Defaults to 0 if not specified."}
+    )

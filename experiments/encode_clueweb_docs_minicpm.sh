@@ -11,7 +11,7 @@
 
 eval "$(conda shell.bash hook)"
 conda activate minicpmembed
-module load cuda-12.1
+# module load cuda-13.0 # already available on a cloud EC2 instance with L40s
 
 set -o allexport
 source local.env

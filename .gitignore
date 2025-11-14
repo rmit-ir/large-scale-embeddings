@@ -185,3 +185,5 @@ tevatron/qrels
 tevatron/GradCache
 
 local.env
+
+data/

@@ -35,8 +35,17 @@ def main():
         data_args: DataArguments
         training_args: TrainingArguments
 
-    if training_args.local_rank > 0 or training_args.n_gpu > 1:
-        raise NotImplementedError('Multi-GPU encoding is not supported.')
+    # Handle custom device specification
+    if training_args.device_id is not None:
+        if training_args.device_id >= torch.cuda.device_count():
+            raise ValueError(f"Specified device_id {training_args.device_id} is not available. "
+                           f"Available devices: 0-{torch.cuda.device_count()-1}")
+        # Override the default device
+        custom_device = torch.device(f'cuda:{training_args.device_id}')
+        print(f"Using custom device: {custom_device}")
+    else:
+        custom_device = None
+        print(f"Using default device: {training_args.device}")
 
     # Setup logging
     logging.basicConfig(
@@ -96,7 +105,8 @@ def main():
     )
     encoded = []
     lookup_indices = []
-    model = model.to(training_args.device)
+    to_device = custom_device if custom_device is not None else training_args.device
+    model = model.to(to_device)
     model.eval()
 
     dtype = None
@@ -134,7 +144,7 @@ def main():
         with torch.cuda.amp.autocast(dtype=dtype) if dtype is not None else nullcontext():
             with torch.no_grad():
                 for k, v in batch.items():
-                    batch[k] = v.to(training_args.device)
+                    batch[k] = v.to(to_device)
                 if data_args.encode_is_query:
                     model_output: EncoderOutput = model(query=batch)
                     encoded.append(model_output.q_reps.cpu().detach().numpy())
