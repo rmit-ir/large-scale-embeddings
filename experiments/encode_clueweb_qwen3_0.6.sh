@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# run the first shard of 8 total shards on device 0
+# bash experiments/encode_clueweb_qwen3_0.6.sh 8 0 0
+
 eval "$(conda shell.bash hook)"
 conda activate minicpmembed
 
@@ -9,9 +12,10 @@ set +o allexport
 echo $HF_HOME
 
 
-PATH_TO_MODEL=openbmb/MiniCPM-Embedding-Light
+# PATH_TO_MODEL=openbmb/MiniCPM-Embedding-Light
+PATH_TO_MODEL=Qwen/Qwen3-Embedding-0.6B
 
-EMBEDDING_OUTPUT_DIR=./data/ann_index/embeds/clueweb22b/MiniCPM-Embedding-Light
+EMBEDDING_OUTPUT_DIR=./data/ann_index/embeds/clueweb22b/Qwen3-Embedding-0.6B
 
 mkdir -p $EMBEDDING_OUTPUT_DIR
 
@@ -29,7 +33,8 @@ device=${3:-"0"}
 
 echo "Processing shard $shard of $num_total_shard total shards"
 
-local_bz=2048
+# local_bz=2048
+local_bz=512
 
 
 # corpus encoding
