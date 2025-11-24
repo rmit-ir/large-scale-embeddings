@@ -2,7 +2,7 @@
 eval "$(conda shell.bash hook)"
 conda activate minicpmembed
 
-INDEX_DIR=./data/ann_index/embeds/clueweb22b/MiniCPM-Embedding-Light
+INDEX_DIR=./data/ann_index/embeds/clueweb22b-small/MiniCPM-Embedding-Light
 QUERIES_N_OUTPUT_DIR=./data/queries/embeds/MiniCPM-Embedding-Light
 
 set -f && python -m tevatron.retriever.driver.search \
