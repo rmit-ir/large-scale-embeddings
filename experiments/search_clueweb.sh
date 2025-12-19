@@ -1,4 +1,6 @@
 #!/bin/bash
+# plain search
+
 eval "$(conda shell.bash hook)"
 conda activate minicpmembed
 
