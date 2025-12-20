@@ -6,7 +6,10 @@ Use conda environment: minicpmembed
 """
 
 import os
+import pickle
 import uvicorn
+import httpx
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -55,20 +58,63 @@ class HealthResponse(BaseModel):
     """Health check response"""
     status: str = Field(..., description="Service status")
     model_loaded: bool = Field(..., description="Whether model is loaded")
+    num_docs: int = Field(..., description="Number of documents in mapping")
     timestamp: float = Field(..., description="Current timestamp")
+
+
+# Search request/response models
+class SearchRequest(BaseModel):
+    """Request model for search endpoint"""
+    query: str = Field(..., description="Search query text")
+    k: int = Field(default=10, description="Number of results to return")
+    complexity: int = Field(
+        default=50, description="Search complexity parameter")
+    with_distance: bool = Field(
+        default=False, description="Include similarity scores in response")
+
+
+class SearchResult(BaseModel):
+    """Single search result"""
+    docid: str = Field(..., description="ClueWeb22-B document ID")
+    distance: Optional[float] = Field(
+        None, description="Similarity score (if with_distance=True)")
+
+
+class SearchResponse(BaseModel):
+    """Response model for search endpoint"""
+    results: List[SearchResult] = Field(..., description="Search results")
+    query: str = Field(..., description="Original query")
+    k: int = Field(..., description="Number of results requested")
 
 
 # Global model instance
 embedding_model: Optional[EmbeddingModel] = None
+docid_mapping: Optional[List[str]] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for model initialization"""
-    global embedding_model
+    global embedding_model, docid_mapping
+
     # Startup: Initialize the embedding model
+    print("Loading embedding model...")
     embedding_model = EmbeddingModel(
         model_path="openbmb/MiniCPM-Embedding-Light")
+    print("Embedding model loaded successfully")
+
+    # Load docid mapping for translating internal IDs to ClueWeb22-B IDs
+    docid_path = Path(
+        "./data/ann_index/embeds/clueweb22b/MiniCPM-Embedding-Light-diskann/docids.pkl")
+    if docid_path.exists():
+        print(f"Loading docid mapping from {docid_path}...")
+        with open(docid_path, "rb") as f:
+            docid_mapping = pickle.load(f)
+        print(f"Loaded {len(docid_mapping)} document ID mappings")
+    else:
+        print(f"Warning: Docid mapping file not found at {docid_path}")
+        print("Search endpoint will return raw indices instead of ClueWeb22-B IDs")
+
     yield
 
 
@@ -92,6 +138,7 @@ async def health_check():
     return HealthResponse(
         status="healthy" if embedding_model is not None else "initializing",
         model_loaded=embedding_model is not None,
+        num_docs=len(docid_mapping) if docid_mapping is not None else 0,
         timestamp=time.time()
     )
 
@@ -145,6 +192,86 @@ async def create_embeddings(request: EmbeddingRequest):
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error processing request: {str(e)}")
+
+
+@app.post("/search", response_model=SearchResponse)
+async def search(request: SearchRequest):
+    """
+    Search endpoint that performs semantic search over ClueWeb22-B corpus
+
+    This endpoint:
+    1. Embeds the query using the embedding model
+    2. Sends the embedding to the DiskANN search node at localhost:51001
+    3. Translates raw internal IDs to ClueWeb22-B document IDs
+    4. Returns the search results
+
+    Args:
+        request: SearchRequest with query text, k, complexity, and with_distance parameters
+
+    Returns:
+        SearchResponse with results containing ClueWeb22-B document IDs
+    """
+    if embedding_model is None:
+        raise HTTPException(
+            status_code=503, detail="Embedding model not loaded yet")
+
+    try:
+        # Step 1: Embed the query
+        query_embedding = embedding_model.embed(request.query)
+
+        # Step 2: Send request to DiskANN search node at localhost:51001
+        search_node_url = os.environ.get("SEARCH_NODE_URL",
+                                         "http://localhost:51001/search")
+        payload = {
+            "q_emb": query_embedding,
+            "k": request.k,
+            "complexity": request.complexity
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(search_node_url, json=payload)
+
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Search node returned error: {response.text}"
+            )
+
+        search_data = response.json()
+        raw_indices = search_data["indices"]
+        distances = search_data["distances"]
+
+        # Step 3: Translate raw indices to ClueWeb22-B document IDs
+        results = []
+        for idx, (raw_id, distance) in enumerate(zip(raw_indices, distances)):
+            if docid_mapping is not None and 0 <= raw_id < len(docid_mapping):
+                docid = docid_mapping[raw_id]
+            else:
+                print(
+                    f"Warning: No docid mapping for raw_id {raw_id}, query: {request.query}")
+                continue  # Skip if mapping is not available
+
+            if request.with_distance:
+                results.append(SearchResult(docid=docid, distance=distance))
+            else:
+                results.append(SearchResult(docid=docid))
+
+        return SearchResponse(
+            results=results,
+            query=request.query,
+            k=request.k
+        )
+
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Error connecting to search node: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing search request: {str(e)}"
+        )
 
 
 if __name__ == "__main__":

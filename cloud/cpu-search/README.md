@@ -24,21 +24,38 @@ Script `experiments/search_clueweb.sh`
 
 ## Usage
 
-### Run embedding server
+### Install dependencies
 
 ```bash
 # Activate the conda environment
 conda activate minicpmembed
+
 # Update environment
 conda env update --file ../../environment.yaml
+```
 
+### Run search server
+
+```bash
 # Run the server
 PORT=51002 python router.py
 ```
 
-Returns
+The server provides two main endpoints:
+
+#### 1. Embedding endpoint: `/embed`
+
+Returns embeddings for text:
 
 ```bash
+curl -X POST http://localhost:51002/embed \
+  -H "Content-Type: application/json" \
+  -d '{"input": "What is machine learning?"}'
+```
+
+Returns:
+
+```json
 {
   "object": "list",
   "data": [{
@@ -50,6 +67,41 @@ Returns
   "usage": {"prompt_tokens": 2, "total_tokens": 2}
 }
 ```
+
+#### 2. Search endpoint: `/search`
+
+Performs semantic search over ClueWeb22-B corpus:
+
+```bash
+curl -X POST http://localhost:51002/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is machine learning?",
+    "k": 10,
+    "complexity": 50,
+    "with_distance": true
+  }'
+```
+
+Returns:
+
+```json
+{
+  "results": [
+    {
+      "docid": "clueweb22-en0000-00-00000",
+      "distance": -5.436867237091064
+    },
+    ...
+  ],
+  "query": "What is machine learning?",
+  "k": 10
+}
+```
+
+**Note**: The search endpoint requires:
+1. DiskANN search node running at `localhost:51001` (or set via `SEARCH_NODE_URL` env var)
+2. Document ID mapping file at `./data/ann_index/embeds/clueweb22b/MiniCPM-Embedding-Light-diskann/docids.pkl`
 
 ### Run DiskANN search server
 
@@ -73,6 +125,4 @@ Returns
   "distances": [-5.4368672370910645, -5.443008899688721, -5.4554338455200195, -5.458445072174072, -5.482348442077637, -5.485116958618164, -5.520634651184082, -5.5278401374816895, -5.532476425170898, -5.542726516723633]
 }
 ```
-
-### Convert IDs back to documents
 
