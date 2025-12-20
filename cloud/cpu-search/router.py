@@ -105,15 +105,14 @@ async def lifespan(app: FastAPI):
 
     # Load docid mapping for translating internal IDs to ClueWeb22-B IDs
     docid_path = Path(
-        "./data/ann_index/embeds/clueweb22b/MiniCPM-Embedding-Light-diskann/docids.pkl")
+        "../../data/ann_index/embeds/clueweb22b/MiniCPM-Embedding-Light-diskann/docids.pkl")
     if docid_path.exists():
         print(f"Loading docid mapping from {docid_path}...")
         with open(docid_path, "rb") as f:
             docid_mapping = pickle.load(f)
         print(f"Loaded {len(docid_mapping)} document ID mappings")
     else:
-        print(f"Warning: Docid mapping file not found at {docid_path}")
-        print("Search endpoint will return raw indices instead of ClueWeb22-B IDs")
+        raise Exception(f"Docid mapping file not found at {docid_path}")
 
     yield
 
