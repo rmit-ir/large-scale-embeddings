@@ -70,3 +70,6 @@ dependencies:
       - urllib3==2.3.0
       - xxhash==3.5.0
       - yarl==1.18.3
+      - uvicorn
+      - fastapi
+      - pydantic
