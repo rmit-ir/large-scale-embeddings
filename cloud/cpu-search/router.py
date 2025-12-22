@@ -17,8 +17,13 @@ from typing import Optional, Union, List, Literal
 import time
 from embed import EmbeddingModel
 
+DOC_ID_MAPPING_PATH = os.environ.get("DOC_ID_MAPPING_PATH",
+                                     "../../data/ann_index/embeds/clueweb22b/MiniCPM-Embedding-Light-diskann/docids.pkl")
+PORT = int(os.environ.get("PORT", 8000))
+SEARCH_NODE_URL = os.environ.get("SEARCH_NODE_URL",
+                                 "http://localhost:51001/search")
 
-# OpenAI API compatible request/response models
+
 class EmbeddingRequest(BaseModel):
     """Request model following OpenAI embeddings API specification"""
     input: Union[str, List[str]] = Field(...,
@@ -59,7 +64,7 @@ class HealthResponse(BaseModel):
     status: str = Field(..., description="Service status")
     model_loaded: bool = Field(..., description="Whether model is loaded")
     num_docs: int = Field(..., description="Number of documents in mapping")
-    timestamp: float = Field(..., description="Current timestamp")
+    timestamps: dict = Field(..., description="Timestamps for health check")
 
 
 # Search request/response models
@@ -69,15 +74,13 @@ class SearchRequest(BaseModel):
     k: int = Field(default=10, description="Number of results to return")
     complexity: int = Field(
         default=50, description="Search complexity parameter")
-    with_distance: bool = Field(
-        default=False, description="Include similarity scores in response")
 
 
 class SearchResult(BaseModel):
     """Single search result"""
     docid: str = Field(..., description="ClueWeb22-B document ID")
     distance: Optional[float] = Field(
-        None, description="Similarity score (if with_distance=True)")
+        None, description="Similarity score")
 
 
 class SearchResponse(BaseModel):
@@ -92,35 +95,41 @@ embedding_model: Optional[EmbeddingModel] = None
 docid_mapping: Optional[List[str]] = None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Lifespan event handler for model initialization"""
-    global embedding_model, docid_mapping
-
-    # Startup: Initialize the embedding model
+def load_embedding_model():
+    global embedding_model
     print("Loading embedding model...")
     embedding_model = EmbeddingModel(
         model_path="openbmb/MiniCPM-Embedding-Light")
     print("Embedding model loaded successfully")
 
-    # Load docid mapping for translating internal IDs to ClueWeb22-B IDs
-    docid_path = Path(
-        "../../data/ann_index/embeds/clueweb22b/MiniCPM-Embedding-Light-diskann/docids.pkl")
+
+def load_docid_mapping():
+    global docid_mapping
+    docid_path = Path(DOC_ID_MAPPING_PATH)
     if docid_path.exists():
         print(f"Loading docid mapping from {docid_path}...")
         with open(docid_path, "rb") as f:
             docid_mapping = pickle.load(f)
-        print(f"Loaded {len(docid_mapping)} document ID mappings")
+        print(f"Loaded {len(docid_mapping or [])} document ID mappings")
     else:
         raise Exception(f"Docid mapping file not found at {docid_path}")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for model initialization"""
+    app.state.startup_time = time.time()
+    load_embedding_model()
+    load_docid_mapping()
+    # set startup complete time
+    app.state.startup_complete_time = time.time()
     yield
 
 
 # FastAPI app
 app = FastAPI(
-    title="Embedding API",
-    description="OpenAI-compatible embedding API using Tevatron",
+    title="Search API",
+    description="Search API for ClueWeb22-B using DiskANN and Tevatron",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -138,7 +147,9 @@ async def health_check():
         status="healthy" if embedding_model is not None else "initializing",
         model_loaded=embedding_model is not None,
         num_docs=len(docid_mapping) if docid_mapping is not None else 0,
-        timestamp=time.time()
+        timestamps=({"timestamp": time.time(),
+                     "startup_time": app.state.startup_time,
+                     "startup_complete_time": app.state.startup_complete_time})
     )
 
 
@@ -204,9 +215,6 @@ async def search(request: SearchRequest):
     3. Translates raw internal IDs to ClueWeb22-B document IDs
     4. Returns the search results
 
-    Args:
-        request: SearchRequest with query text, k, complexity, and with_distance parameters
-
     Returns:
         SearchResponse with results containing ClueWeb22-B document IDs
     """
@@ -219,8 +227,6 @@ async def search(request: SearchRequest):
         query_embedding = embedding_model.embed(request.query)
 
         # Step 2: Send request to DiskANN search node at localhost:51001
-        search_node_url = os.environ.get("SEARCH_NODE_URL",
-                                         "http://localhost:51001/search")
         payload = {
             "q_emb": query_embedding,
             "k": request.k,
@@ -228,7 +234,7 @@ async def search(request: SearchRequest):
         }
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(search_node_url, json=payload)
+            response = await client.post(SEARCH_NODE_URL, json=payload)
 
         if response.status_code != 200:
             raise HTTPException(
@@ -250,10 +256,7 @@ async def search(request: SearchRequest):
                     f"Warning: No docid mapping for raw_id {raw_id}, query: {request.query}")
                 continue  # Skip if mapping is not available
 
-            if request.with_distance:
-                results.append(SearchResult(docid=docid, distance=distance))
-            else:
-                results.append(SearchResult(docid=docid))
+            results.append(SearchResult(docid=docid, distance=distance))
 
         return SearchResponse(
             results=results,
@@ -274,5 +277,4 @@ async def search(request: SearchRequest):
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

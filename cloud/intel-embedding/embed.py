@@ -6,6 +6,8 @@
 # ///
 
 """
+Deprecated, optimum doesn't support feature-extraction for MiniCPM models.
+
 OpenVINO GenAI Text Embedding Script
 
 This script uses OpenVINO GenAI to run text embedding models.
