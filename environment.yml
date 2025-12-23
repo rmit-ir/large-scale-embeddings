@@ -74,3 +74,4 @@ dependencies:
       - fastapi
       - pydantic
       - httpx
+      - zstd
