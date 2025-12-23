@@ -4,6 +4,64 @@ Convert ClueWeb22-B JSON.gz files to SQLite database format.
 Optimized for fast random access by ClueWeb22_ID with optional compression.
 
 python experiments/convert_clueweb22_to_sqlite.py --input /home/eh6/E128356/scratch/collections/ClueWeb22-B/txt/en/ --output data/clueweb-docs-db/clueweb22b_en.db --use-compression --compression-level 5
+
+(minicpmembed) [e128356@sctsresap21 large-scale-embeddings]$ python experiments/convert_clueweb22_to_sqlite.py --input /home/eh6/E128356/scratch/collections/ClueWeb22-B/txt/en/ --output data/clueweb-docs-db/clueweb
+22b_en.db --use-compression --compression-level 5 --num-threads 128 --verify
+
+Verifying database: data/clueweb-docs-db/clueweb22b_en.db
+
+Total records: 87,208,655
+
+Sample records (first 5):
+
+[1] ID: clueweb22-en0000-01-01649
+    URL: https://www.amazon.com/litter-locker-ii/s?k=litter+locker+ii
+
+    Language: en
+    Words: 1,981
+    JSON size: 12,066 bytes
+    Compressed size: 4,166 bytes
+    Compression ratio: 2.90x
+
+[2] ID: clueweb22-en0000-01-03142
+    URL: https://www.buildzoom.com/contractor/f-j-drywall-llc
+
+    Language: en
+    Words: 362
+    JSON size: 2,531 bytes
+    Compressed size: 1,272 bytes
+    Compression ratio: 1.99x
+
+[3] ID: clueweb22-en0000-00-13593
+    URL: https://www.cnywrestling.com/iv/teams/Oxford/
+
+    Language: en
+    Words: 897
+    JSON size: 5,530 bytes
+    Compressed size: 2,460 bytes
+    Compression ratio: 2.25x
+
+[4] ID: clueweb22-en0000-00-13710
+    URL: https://www.reddit.com/r/tiktokthots/comments/okq43m/uluvmi/
+
+    Language: en
+    Words: 462
+    JSON size: 2,892 bytes
+    Compressed size: 1,444 bytes
+    Compression ratio: 2.00x
+
+[5] ID: clueweb22-en0000-01-01648
+    URL: https://www.dess-usa.com/biohorizons-hex-compatible-intraoral-scan-body/
+
+    Language: en
+    Words: 216
+    JSON size: 1,536 bytes
+    Compressed size: 561 bytes
+    Compression ratio: 2.74x
+
+Testing random access with ID: clueweb22-en0000-00-00100
+✓ Successfully retrieved document
+  URL: https://www.stepheneinhorn.co.uk/bespoke-rings.asp
 """
 
 import json
