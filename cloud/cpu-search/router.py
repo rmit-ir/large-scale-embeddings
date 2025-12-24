@@ -13,12 +13,15 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from typing import Optional, Union, List, Literal
+from typing import Optional, Union, List, Literal, Dict, Any
 import time
 from embed import EmbeddingModel
+from docs_loader import DocsLoader
 
 DOC_ID_MAPPING_PATH = os.environ.get("DOC_ID_MAPPING_PATH",
                                      "../../data/ann_index/embeds/clueweb22b/MiniCPM-Embedding-Light-diskann/docids.pkl")
+DOC_DB_PATH = os.environ.get("DOC_DB_PATH", None)
+USE_COMPRESSION = os.environ.get("USE_COMPRESSION", "false").lower() == "true"
 PORT = int(os.environ.get("PORT", 8000))
 SEARCH_NODE_URL = os.environ.get("SEARCH_NODE_URL",
                                  "http://localhost:51001/search")
@@ -81,6 +84,8 @@ class SearchResult(BaseModel):
     docid: str = Field(..., description="ClueWeb22-B document ID")
     distance: Optional[float] = Field(
         None, description="Similarity score")
+    doc: Optional[Dict[str, Any]] = Field(
+        None, description="Raw JSON body of the document")
 
 
 class SearchResponse(BaseModel):
@@ -90,9 +95,10 @@ class SearchResponse(BaseModel):
     k: int = Field(..., description="Number of results requested")
 
 
-# Global model instance
+# Global instances
 embedding_model: Optional[EmbeddingModel] = None
 docid_mapping: Optional[List[str]] = None
+docs_loader: Optional[DocsLoader] = None
 
 
 def load_embedding_model():
@@ -115,12 +121,26 @@ def load_docid_mapping():
         raise Exception(f"Docid mapping file not found at {docid_path}")
 
 
+def load_docs_loader():
+    global docs_loader
+    if DOC_DB_PATH:
+        print(f"Initializing document loader with database: {DOC_DB_PATH}")
+        docs_loader = DocsLoader(
+            db_path=DOC_DB_PATH,
+            use_compression=USE_COMPRESSION)
+        print("Document loader initialized successfully")
+    else:
+        print("DOC_DB_PATH not set, document loader will not be available")
+        docs_loader = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for model initialization"""
     app.state.startup_time = time.time()
     load_embedding_model()
     load_docid_mapping()
+    load_docs_loader()
     # set startup complete time
     app.state.startup_complete_time = time.time()
     yield
@@ -247,16 +267,26 @@ async def search(request: SearchRequest):
         distances = search_data["distances"]
 
         # Step 3: Translate raw indices to ClueWeb22-B document IDs
+        docids = []
         results = []
         for idx, (raw_id, distance) in enumerate(zip(raw_indices, distances)):
             if docid_mapping is not None and 0 <= raw_id < len(docid_mapping):
                 docid = docid_mapping[raw_id]
+                docids.append(docid)
+                results.append(SearchResult(
+                    docid=docid,
+                    distance=distance,
+                    doc=None))
             else:
                 print(
                     f"Warning: No docid mapping for raw_id {raw_id}, query: {request.query}")
                 continue  # Skip if mapping is not available
 
-            results.append(SearchResult(docid=docid, distance=distance))
+        # Step 4: Load document bodies if requested
+        if docs_loader is not None and docids:
+            docs = docs_loader.load_docs_by_ids(docids)
+            for result, doc in zip(results, docs):
+                result.doc = doc
 
         return SearchResponse(
             results=results,
