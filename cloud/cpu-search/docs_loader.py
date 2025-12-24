@@ -118,16 +118,12 @@ class DocsLoader:
                     doc_id, doc = future.result()
                     if doc is not None:
                         result_dict[doc_id] = doc
-                    else:
-                        print(f"Document {doc_id} empty.")
         else:
             # Single-threaded for small batches or uncompressed data
             for doc_id, json_data in results:
                 _, doc = self._decompress_and_parse(doc_id, json_data)
                 if doc is not None:
                     result_dict[doc_id] = doc
-                else:
-                    print(f"Document {doc_id} empty.")
 
         # Return docs in original query_ids order, None for not found
         return [result_dict.get(qid) for qid in query_ids]

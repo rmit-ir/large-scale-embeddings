@@ -37,38 +37,21 @@ conda env update --file ../../environment.yaml
 ### Run search server
 
 ```bash
-# Run the server
+# Run the search engine, under project root folder
+uv run -p 3.11 --with numpy --with uvicorn --with diskannpy==0.7.0 --with fastapi --with pydantic search_api/cw22_search_api/cw22_node_generic.py \
+  --node-id "0" \
+  --index-dir "./data/ann_index/diskann-indexes/clueweb22b_minicpm_R150_L300_B24_M1300" \
+  --port 51001 \
+  --index-prefix "index_" \
+  --dimensions 1024 \
+  --num-threads 4 \
+  --num-nodes-to-cache 10000
+
+# Run the search API server, under cloud/cpu-search folder
 PORT=51002 python router.py
 ```
 
-The server provides two main endpoints:
-
-#### 1. Embedding endpoint: `/embed`
-
-Returns embeddings for text:
-
-```bash
-curl -X POST http://localhost:51002/embed \
-  -H "Content-Type: application/json" \
-  -d '{"input": "What is machine learning?"}'
-```
-
-Returns:
-
-```json
-{
-  "object": "list",
-  "data": [{
-      "object": "embedding",
-      "embedding": [ 0.014239102602005005, 0.026707859709858894, ... -0.005067536141723394 ],
-      "index": 0
-  }],
-  "model": "openbmb/MiniCPM-Embedding-Light",
-  "usage": {"prompt_tokens": 2, "total_tokens": 2}
-}
-```
-
-#### 2. Search endpoint: `/search`
+#### Search endpoint: `/search`
 
 Performs semantic search over ClueWeb22-B corpus:
 

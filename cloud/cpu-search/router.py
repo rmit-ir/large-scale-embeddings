@@ -5,23 +5,29 @@ FastAPI router for embedding API following OpenAI's specification
 Use conda environment: minicpmembed
 """
 
+import logging
 import os
 import pickle
 import uvicorn
 import httpx
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 from typing import Optional, Union, List, Literal, Dict, Any
 import time
 from embed import EmbeddingModel
 from docs_loader import DocsLoader
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('cpu-search-router')
+
+
 DOC_ID_MAPPING_PATH = os.environ.get("DOC_ID_MAPPING_PATH",
                                      "../../data/ann_index/embeds/clueweb22b/MiniCPM-Embedding-Light-diskann/docids.pkl")
-DOC_DB_PATH = os.environ.get("DOC_DB_PATH", None)
-USE_COMPRESSION = os.environ.get("USE_COMPRESSION", "false").lower() == "true"
+DOC_DB_PATH = os.environ.get(
+    "DOC_DB_PATH", "../../data/clueweb-docs-db/clueweb22b_en.db")
+USE_COMPRESSION = os.environ.get("USE_COMPRESSION", "true").lower() == "true"
 PORT = int(os.environ.get("PORT", 8000))
 SEARCH_NODE_URL = os.environ.get("SEARCH_NODE_URL",
                                  "http://localhost:51001/search")
@@ -174,7 +180,9 @@ async def health_check():
 
 
 @app.post("/embed", response_model=EmbeddingResponse)
-async def create_embeddings(request: EmbeddingRequest):
+async def create_embeddings(request: EmbeddingRequest, response: Response):
+    start_time = time.perf_counter()
+
     if embedding_model is None:
         raise HTTPException(status_code=503, detail="Model not loaded yet")
 
@@ -190,12 +198,15 @@ async def create_embeddings(request: EmbeddingRequest):
                 status_code=400, detail="Input cannot be empty")
 
         # Get embeddings
+        embed_start = time.perf_counter()
         if len(inputs) == 1:
             embeddings = [embedding_model.embed(inputs[0])]
         else:
             embeddings = embedding_model.embed_docs(inputs)
+        embed_time = (time.perf_counter() - embed_start) * 1000
 
         # Build response data
+        build_start = time.perf_counter()
         data = [
             EmbeddingData(
                 object="embedding",
@@ -208,6 +219,12 @@ async def create_embeddings(request: EmbeddingRequest):
         # Approximate token count (simple word count * 1.3)
         total_tokens = sum(len(text.split()) for text in inputs)
         total_tokens = int(total_tokens * 1.3)
+        build_time = (time.perf_counter() - build_start) * 1000
+
+        total_time = (time.perf_counter() - start_time) * 1000
+
+        # Add Server-Timing header
+        response.headers["Server-Timing"] = f"embed;dur={embed_time:.2f}, build;dur={build_time:.2f}, total;dur={total_time:.2f}"
 
         return EmbeddingResponse(
             object="list",
@@ -225,7 +242,7 @@ async def create_embeddings(request: EmbeddingRequest):
 
 
 @app.post("/search", response_model=SearchResponse)
-async def search(request: SearchRequest):
+async def search(request: SearchRequest, response: Response):
     """
     Search endpoint that performs semantic search over ClueWeb22-B corpus
 
@@ -238,15 +255,20 @@ async def search(request: SearchRequest):
     Returns:
         SearchResponse with results containing ClueWeb22-B document IDs
     """
+    start_time = time.perf_counter()
+
     if embedding_model is None:
         raise HTTPException(
             status_code=503, detail="Embedding model not loaded yet")
 
     try:
         # Step 1: Embed the query
+        embed_start = time.perf_counter()
         query_embedding = embedding_model.embed(request.query)
+        embed_time = (time.perf_counter() - embed_start) * 1000
 
         # Step 2: Send request to DiskANN search node at localhost:51001
+        search_start = time.perf_counter()
         payload = {
             "q_emb": query_embedding,
             "k": request.k,
@@ -254,19 +276,22 @@ async def search(request: SearchRequest):
         }
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(SEARCH_NODE_URL, json=payload)
+            http_response = await client.post(SEARCH_NODE_URL, json=payload)
 
-        if response.status_code != 200:
+        if http_response.status_code != 200:
             raise HTTPException(
                 status_code=502,
-                detail=f"Search node returned error: {response.text}"
+                detail=f"Search node returned error: {http_response.text}"
             )
 
-        search_data = response.json()
+        search_data = http_response.json()
+        search_time = (time.perf_counter() - search_start) * 1000
+
         raw_indices = search_data["indices"]
         distances = search_data["distances"]
 
         # Step 3: Translate raw indices to ClueWeb22-B document IDs
+        translate_start = time.perf_counter()
         docids = []
         results = []
         for idx, (raw_id, distance) in enumerate(zip(raw_indices, distances)):
@@ -281,12 +306,21 @@ async def search(request: SearchRequest):
                 print(
                     f"Warning: No docid mapping for raw_id {raw_id}, query: {request.query}")
                 continue  # Skip if mapping is not available
+        translate_time = (time.perf_counter() - translate_start) * 1000
 
         # Step 4: Load document bodies if requested
+        expand_time = 0.0
         if docs_loader is not None and docids:
+            expand_start = time.perf_counter()
             docs = docs_loader.load_docs_by_ids(docids)
             for result, doc in zip(results, docs):
                 result.doc = doc
+            expand_time = (time.perf_counter() - expand_start) * 1000
+
+        total_time = (time.perf_counter() - start_time) * 1000
+
+        # Add Server-Timing header
+        response.headers["Server-Timing"] = f"embed;dur={embed_time:.2f}, search;dur={search_time:.2f}, translate;dur={translate_time:.2f}, expand;dur={expand_time:.2f}, total;dur={total_time:.2f}"
 
         return SearchResponse(
             results=results,
