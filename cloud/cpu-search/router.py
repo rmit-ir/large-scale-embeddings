@@ -28,6 +28,7 @@ DOC_DB_PATH = os.environ.get(
     "DOC_DB_PATH", "../../data/clueweb-docs-db/clueweb22b_en.db")
 USE_COMPRESSION = os.environ.get("USE_COMPRESSION", "true").lower() == "true"
 PORT = int(os.environ.get("PORT", 8000))
+DOCS_LOADER_NUM_THREADS = int(os.environ.get("DOCS_LOADER_NUM_THREADS", -1))
 SEARCH_NODE_URL = os.environ.get("SEARCH_NODE_URL",
                                  "http://localhost:51001/search")
 EMBED_NODE_URL = os.environ.get("EMBED_NODE_URL",
@@ -89,7 +90,8 @@ def load_docs_loader():
         print(f"Initializing document loader with database: {DOC_DB_PATH}")
         docs_loader = DocsLoader(
             db_path=DOC_DB_PATH,
-            use_compression=USE_COMPRESSION)
+            use_compression=USE_COMPRESSION,
+            num_threads=DOCS_LOADER_NUM_THREADS)
         print("Document loader initialized successfully")
     else:
         print("DOC_DB_PATH not set, document loader will not be available")

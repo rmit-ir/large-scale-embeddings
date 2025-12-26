@@ -36,7 +36,8 @@ class DocsLoader:
             raise FileNotFoundError(f"Database file not found: {db_path}")
 
         self.use_compression = use_compression
-        self.num_threads = num_threads or int(multiprocessing.cpu_count() / 2)
+        self.num_threads = num_threads if num_threads is not None and num_threads > 0 \
+            else int(multiprocessing.cpu_count() / 2)
 
         # Test connection
         self._test_connection()
@@ -79,7 +80,7 @@ class DocsLoader:
             print(f"Error parsing document {doc_id}: {e}")
             return doc_id, None
 
-    def load_docs_by_ids(self, query_ids: List[str]) -> List[Optional[Dict]]:
+    def load_docs_by_ids(self, doc_ids: List[str]) -> List[Optional[Dict]]:
         """
         Load documents from SQLite database by ClueWeb22_IDs.
 
@@ -89,16 +90,16 @@ class DocsLoader:
         Returns:
             List of document dictionaries (None for not found), preserving query_ids order
         """
-        if not query_ids:
+        if not doc_ids:
             return []
 
         conn = sqlite3.connect(str(self.db_path))
         cursor = conn.cursor()
 
         # Batch query with IN clause
-        placeholders = ','.join('?' * len(query_ids))
+        placeholders = ','.join('?' * len(doc_ids))
         query = f"SELECT ClueWeb22_ID, json_data FROM documents WHERE ClueWeb22_ID IN ({placeholders})"
-        cursor.execute(query, query_ids)
+        cursor.execute(query, doc_ids)
 
         # Fetch all results
         results = cursor.fetchall()
@@ -126,7 +127,7 @@ class DocsLoader:
                     result_dict[doc_id] = doc
 
         # Return docs in original query_ids order, None for not found
-        return [result_dict.get(qid) for qid in query_ids]
+        return [result_dict.get(qid) for qid in doc_ids]
 
     def get_doc_by_id(self, doc_id: str) -> Optional[Dict]:
         """
