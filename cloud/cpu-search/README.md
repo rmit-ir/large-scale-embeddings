@@ -47,6 +47,9 @@ uv run -p 3.11 --with numpy --with uvicorn --with diskannpy==0.7.0 --with fastap
   --num-threads 4 \
   --num-nodes-to-cache 10000
 
+# Run the embed API server, under cloud/cpu-search folder
+PORT=51003 python router_embed.py
+
 # Run the search API server, under cloud/cpu-search folder
 PORT=51002 python router.py
 ```

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FastAPI router for embedding API following OpenAI's specification
+FastAPI router for search API using DiskANN and Tevatron
 
 Use conda environment: minicpmembed
 """
@@ -14,9 +14,8 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
-from typing import Optional, Union, List, Literal, Dict, Any
+from typing import Optional, List, Dict, Any
 import time
-from embed import EmbeddingModel
 from docs_loader import DocsLoader
 
 logging.basicConfig(level=logging.INFO)
@@ -31,47 +30,13 @@ USE_COMPRESSION = os.environ.get("USE_COMPRESSION", "true").lower() == "true"
 PORT = int(os.environ.get("PORT", 8000))
 SEARCH_NODE_URL = os.environ.get("SEARCH_NODE_URL",
                                  "http://localhost:51001/search")
-
-
-class EmbeddingRequest(BaseModel):
-    """Request model following OpenAI embeddings API specification"""
-    input: Union[str, List[str]] = Field(...,
-                                         description="Input text(s) to embed")
-    model: str = Field(default="openbmb/MiniCPM-Embedding-Light",
-                       description="Model identifier, not used, fixed to openbmb/MiniCPM-Embedding-Light")
-    encoding_format: Literal["float", "base64"] = Field(
-        default="float", description="Encoding format")
-    dimensions: Optional[int] = Field(
-        default=None, description="Number of dimensions (not used)")
-    user: Optional[str] = Field(default=None, description="User identifier")
-
-
-class EmbeddingData(BaseModel):
-    """Single embedding response data"""
-    object: str = Field(default="embedding", description="Object type")
-    embedding: List[float] = Field(..., description="The embedding vector")
-    index: int = Field(..., description="Index of the embedding in the list")
-
-
-class EmbeddingUsage(BaseModel):
-    """Token usage statistics"""
-    prompt_tokens: int = Field(...,
-                               description="Number of tokens in the prompt")
-    total_tokens: int = Field(..., description="Total tokens used")
-
-
-class EmbeddingResponse(BaseModel):
-    """Response model following OpenAI embeddings API specification"""
-    object: str = Field(default="list", description="Object type")
-    data: List[EmbeddingData] = Field(..., description="List of embeddings")
-    model: str = Field(..., description="Model used")
-    usage: EmbeddingUsage = Field(..., description="Token usage")
+EMBED_NODE_URL = os.environ.get("EMBED_NODE_URL",
+                                "http://localhost:51003/embed")
 
 
 class HealthResponse(BaseModel):
     """Health check response"""
     status: str = Field(..., description="Service status")
-    model_loaded: bool = Field(..., description="Whether model is loaded")
     num_docs: int = Field(..., description="Number of documents in mapping")
     timestamps: dict = Field(..., description="Timestamps for health check")
 
@@ -102,17 +67,8 @@ class SearchResponse(BaseModel):
 
 
 # Global instances
-embedding_model: Optional[EmbeddingModel] = None
 docid_mapping: Optional[List[str]] = None
 docs_loader: Optional[DocsLoader] = None
-
-
-def load_embedding_model():
-    global embedding_model
-    print("Loading embedding model...")
-    embedding_model = EmbeddingModel(
-        model_path="openbmb/MiniCPM-Embedding-Light")
-    print("Embedding model loaded successfully")
 
 
 def load_docid_mapping():
@@ -142,9 +98,8 @@ def load_docs_loader():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan event handler for model initialization"""
+    """Lifespan event handler for initialization"""
     app.state.startup_time = time.time()
-    load_embedding_model()
     load_docid_mapping()
     load_docs_loader()
     # set startup complete time
@@ -170,75 +125,12 @@ async def health_check():
         Health status and model loading state
     """
     return HealthResponse(
-        status="healthy" if embedding_model is not None else "initializing",
-        model_loaded=embedding_model is not None,
+        status="healthy",
         num_docs=len(docid_mapping) if docid_mapping is not None else 0,
         timestamps=({"timestamp": time.time(),
                      "startup_time": app.state.startup_time,
                      "startup_complete_time": app.state.startup_complete_time})
     )
-
-
-@app.post("/embed", response_model=EmbeddingResponse)
-async def create_embeddings(request: EmbeddingRequest, response: Response):
-    start_time = time.perf_counter()
-
-    if embedding_model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded yet")
-
-    try:
-        # Handle both single string and list of strings
-        if isinstance(request.input, str):
-            inputs = [request.input]
-        else:
-            inputs = request.input
-
-        if not inputs:
-            raise HTTPException(
-                status_code=400, detail="Input cannot be empty")
-
-        # Get embeddings
-        embed_start = time.perf_counter()
-        if len(inputs) == 1:
-            embeddings = [embedding_model.embed(inputs[0])]
-        else:
-            embeddings = embedding_model.embed_docs(inputs)
-        embed_time = (time.perf_counter() - embed_start) * 1000
-
-        # Build response data
-        build_start = time.perf_counter()
-        data = [
-            EmbeddingData(
-                object="embedding",
-                embedding=emb,
-                index=idx
-            )
-            for idx, emb in enumerate(embeddings)
-        ]
-
-        # Approximate token count (simple word count * 1.3)
-        total_tokens = sum(len(text.split()) for text in inputs)
-        total_tokens = int(total_tokens * 1.3)
-        build_time = (time.perf_counter() - build_start) * 1000
-
-        total_time = (time.perf_counter() - start_time) * 1000
-
-        # Add Server-Timing header
-        response.headers["Server-Timing"] = f"embed;dur={embed_time:.2f}, build;dur={build_time:.2f}, total;dur={total_time:.2f}"
-
-        return EmbeddingResponse(
-            object="list",
-            data=data,
-            model=request.model,
-            usage=EmbeddingUsage(
-                prompt_tokens=total_tokens,
-                total_tokens=total_tokens
-            )
-        )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error processing request: {str(e)}")
 
 
 @app.post("/search", response_model=SearchResponse)
@@ -247,7 +139,7 @@ async def search(request: SearchRequest, response: Response):
     Search endpoint that performs semantic search over ClueWeb22-B corpus
 
     This endpoint:
-    1. Embeds the query using the embedding model
+    1. Calls the embedding service to embed the query
     2. Sends the embedding to the DiskANN search node at localhost:51001
     3. Translates raw internal IDs to ClueWeb22-B document IDs
     4. Returns the search results
@@ -257,14 +149,25 @@ async def search(request: SearchRequest, response: Response):
     """
     start_time = time.perf_counter()
 
-    if embedding_model is None:
-        raise HTTPException(
-            status_code=503, detail="Embedding model not loaded yet")
-
     try:
-        # Step 1: Embed the query
+        # Step 1: Call embedding service to embed the query
         embed_start = time.perf_counter()
-        query_embedding = embedding_model.embed(request.query)
+        embed_payload = {
+            "input": request.query,
+            "model": "openbmb/MiniCPM-Embedding-Light"
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            embed_response = await client.post(EMBED_NODE_URL, json=embed_payload)
+
+        if embed_response.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Embed service returned error: {embed_response.text}"
+            )
+
+        embed_data = embed_response.json()
+        query_embedding = embed_data["data"][0]["embedding"]
         embed_time = (time.perf_counter() - embed_start) * 1000
 
         # Step 2: Send request to DiskANN search node at localhost:51001
@@ -331,7 +234,7 @@ async def search(request: SearchRequest, response: Response):
     except httpx.HTTPError as e:
         raise HTTPException(
             status_code=502,
-            detail=f"Error connecting to search node: {str(e)}"
+            detail=f"Error connecting to service: {str(e)}"
         )
     except Exception as e:
         raise HTTPException(
