@@ -194,7 +194,8 @@ async def search(request: SearchRequest, response: Response):
         distances = search_data["distances"]
 
         # Step 3: Translate raw indices to ClueWeb22-B document IDs
-        translate_start = time.perf_counter()
+        expand_start = time.perf_counter()
+        # translate_start = time.perf_counter()
         docids = []
         results = []
         for idx, (raw_id, distance) in enumerate(zip(raw_indices, distances)):
@@ -209,21 +210,19 @@ async def search(request: SearchRequest, response: Response):
                 print(
                     f"Warning: No docid mapping for raw_id {raw_id}, query: {request.query}")
                 continue  # Skip if mapping is not available
-        translate_time = (time.perf_counter() - translate_start) * 1000
+        # translate_time = (time.perf_counter() - translate_start) * 1000
 
         # Step 4: Load document bodies if requested
-        expand_time = 0.0
         if docs_loader is not None and docids:
-            expand_start = time.perf_counter()
             docs = docs_loader.load_docs_by_ids(docids)
             for result, doc in zip(results, docs):
                 result.doc = doc
-            expand_time = (time.perf_counter() - expand_start) * 1000
+        expand_time = (time.perf_counter() - expand_start) * 1000
 
         total_time = (time.perf_counter() - start_time) * 1000
 
         # Add Server-Timing header
-        response.headers["Server-Timing"] = f"embed;dur={embed_time:.2f}, search;dur={search_time:.2f}, translate;dur={translate_time:.2f}, expand;dur={expand_time:.2f}, total;dur={total_time:.2f}"
+        response.headers["Server-Timing"] = f"embed;dur={embed_time:.2f}, search;dur={search_time:.2f}, expand;dur={expand_time:.2f}, total;dur={total_time:.2f}"
 
         return SearchResponse(
             results=results,
