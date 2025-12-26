@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-CPU-Only Text Embedding Script using Tevatron
+Text Embedding Script using Tevatron
 
-This script wraps the tevatron encoding approach for CPU-only inference.
+This script wraps the tevatron encoding.
 Based on the encoding method used in encode_clueweb_example_queries.sh
 """
 
+from typing import Optional
 from transformers import AutoTokenizer
 import torch
 import sys
@@ -19,18 +20,30 @@ from tevatron.retriever.modeling import DenseModel  # noqa: E402
 
 
 class EmbeddingModel:
-    def __init__(self, model_path: str = "openbmb/MiniCPM-Embedding-Light"):
+    def __init__(
+        self,
+        model_path: str = "openbmb/MiniCPM-Embedding-Light",
+        use_gpu: Optional[bool] = None,
+    ):
         """
-        Initialize embedding model using Tevatron's DenseModel for CPU-only inference.
+        Initialize embedding model using Tevatron's DenseModel for CPU or GPU inference.
 
         Args:
             model_path: Path to local model directory or HuggingFace model ID
+            use_gpu: Whether to use GPU for inference. If None, automatically uses GPU when available.
         """
         print(f"Loading model from: {model_path}")
-        print("Using CPU device for inference")
 
-        # Force CPU device
-        self.device = torch.device("cpu")
+        # Determine device: use GPU if available and not explicitly disabled
+        if use_gpu is None:
+            use_gpu = torch.cuda.is_available()
+
+        if use_gpu and not torch.cuda.is_available():
+            print("Warning: GPU requested but not available, falling back to CPU")
+            use_gpu = False
+
+        self.device = torch.device("cuda" if use_gpu else "cpu")
+        print(f"Using {self.device} device for inference")
 
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -38,12 +51,15 @@ class EmbeddingModel:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
         self.tokenizer.padding_side = 'right'
 
-        # Load model with CPU settings (float32 for CPU)
+        # https://huggingface.co/openbmb/MiniCPM-Embedding-Light also uses float16
+        dtype = torch.float16
+
+        # Load model with appropriate settings
         self.model = DenseModel.load(
             model_path,
             pooling='avg',  # Average pooling
             normalize=True,  # L2 normalization
-            torch_dtype=torch.float32  # Use float32 for CPU
+            torch_dtype=dtype
         )
         self.model = self.model.to(self.device)
         self.model.eval()
@@ -120,7 +136,7 @@ class EmbeddingModel:
 
 
 def main():
-    # Initialize the model once (CPU-only, no GPU support)
+    # Initialize the model
     model = EmbeddingModel(model_path="openbmb/MiniCPM-Embedding-Light")
 
     # Example queries
