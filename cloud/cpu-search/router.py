@@ -8,6 +8,7 @@ Use conda environment: minicpmembed
 import logging
 import os
 import pickle
+import sys
 import uvicorn
 import httpx
 import traceback
@@ -19,7 +20,7 @@ from typing import Optional, List, Dict, Any
 import time
 from docs_loader import DocsLoader
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger('cpu-search-router')
 
 
