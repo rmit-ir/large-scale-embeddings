@@ -10,6 +10,7 @@ import os
 import pickle
 import uvicorn
 import httpx
+import traceback
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Response
@@ -233,11 +234,13 @@ async def search(request: SearchRequest, response: Response):
         )
 
     except httpx.HTTPError as e:
+        traceback.print_exc()
         raise HTTPException(
             status_code=502,
             detail=f"Error connecting to service: {str(e)}"
         )
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail=f"Error processing search request: {str(e)}"
