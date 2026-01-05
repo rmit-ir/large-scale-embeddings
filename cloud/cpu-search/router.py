@@ -5,7 +5,6 @@ FastAPI router for search API using DiskANN and Tevatron
 Use conda environment: minicpmembed
 """
 
-import logging
 import os
 import pickle
 import sys
@@ -19,8 +18,8 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import time
 from docs_loader import DocsLoader
+from logging_util import logging
 
-logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger('cpu-search-router')
 
 

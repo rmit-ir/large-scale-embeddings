@@ -5,7 +5,6 @@ FastAPI router for embedding API following OpenAI's specification
 Use conda environment: minicpmembed
 """
 
-import logging
 import os
 import sys
 import uvicorn
@@ -15,8 +14,8 @@ from pydantic import BaseModel, Field
 from typing import Optional, Union, List, Literal
 import time
 from embed import EmbeddingModel
+from logging_util import logging
 
-logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger('embed-router')
 
 
