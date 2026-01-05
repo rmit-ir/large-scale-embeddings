@@ -7,10 +7,9 @@ Use conda environment: minicpmembed
 
 import os
 import pickle
-import sys
 import uvicorn
 import httpx
-import traceback
+import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Response
@@ -19,6 +18,7 @@ from typing import Optional, List, Dict, Any
 import time
 from docs_loader import DocsLoader
 from logging_util import logging
+from health_util import DependencyHealth, check_embed_health, check_search_health
 
 logger = logging.getLogger('cpu-search-router')
 
@@ -41,6 +41,10 @@ class HealthResponse(BaseModel):
     status: str = Field(..., description="Service status")
     num_docs: int = Field(..., description="Number of documents in mapping")
     timestamps: dict = Field(..., description="Timestamps for health check")
+    embed_service: DependencyHealth = Field(...,
+                                            description="Embedding service health status")
+    search_service: DependencyHealth = Field(...,
+                                             description="Search service health status")
 
 
 # Search request/response models
@@ -137,20 +141,33 @@ app = FastAPI(
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """
-    Health check endpoint
-
-    Returns:
-        Health status and model loading state
-    """
     num_docs = len(docid_mapping) if docid_mapping is not None else 0
-    logger.debug(f"Health check: status=healthy, num_docs={num_docs}")
+
+    # Check dependency health status concurrently
+    embed_health, search_health = await asyncio.gather(
+        check_embed_health(EMBED_NODE_URL),
+        check_search_health(SEARCH_NODE_URL)
+    )
+
+    # Determine overall status based on dependencies
+    overall_status = "healthy"
+    if embed_health.status == "unhealthy" or search_health.status == "unhealthy":
+        overall_status = "degraded"
+
+    logger.debug(
+        f"Health check: status={overall_status}, num_docs={num_docs}, "
+        f"embed={embed_health.status}, search={search_health.status}")
+
     return HealthResponse(
-        status="healthy",
+        status=overall_status,
         num_docs=num_docs,
-        timestamps=({"timestamp": time.time(),
-                     "startup_time": app.state.startup_time,
-                     "startup_complete_time": app.state.startup_complete_time})
+        timestamps={
+            "timestamp": time.time(),
+            "startup_time": app.state.startup_time,
+            "startup_complete_time": app.state.startup_complete_time
+        },
+        embed_service=embed_health,
+        search_service=search_health
     )
 
 
