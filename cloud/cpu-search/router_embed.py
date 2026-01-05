@@ -7,6 +7,7 @@ Use conda environment: minicpmembed
 
 import logging
 import os
+import sys
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Response
@@ -15,7 +16,7 @@ from typing import Optional, Union, List, Literal
 import time
 from embed import EmbeddingModel
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger('embed-router')
 
 
