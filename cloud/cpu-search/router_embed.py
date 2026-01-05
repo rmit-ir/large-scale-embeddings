@@ -70,20 +70,28 @@ embedding_model: Optional[EmbeddingModel] = None
 
 def load_embedding_model():
     global embedding_model
-    print("Loading embedding model...")
-    embedding_model = EmbeddingModel(
-        model_path="openbmb/MiniCPM-Embedding-Light")
-    print("Embedding model loaded successfully")
+    logger.info("Loading embedding model...openbmb/MiniCPM-Embedding-Light")
+    try:
+        embedding_model = EmbeddingModel(
+            model_path="openbmb/MiniCPM-Embedding-Light")
+        logger.info("Embedding model loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to load embedding model: {str(e)}")
+        raise
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for model initialization"""
     app.state.startup_time = time.time()
+    logger.info("Application startup initiated")
     load_embedding_model()
     # set startup complete time
     app.state.startup_complete_time = time.time()
+    logger.info(
+        f"Application startup complete in {app.state.startup_complete_time - app.state.startup_time:.2f}s")
     yield
+    logger.info("Application shutdown initiated")
 
 
 # FastAPI app
@@ -103,8 +111,11 @@ async def health_check():
     Returns:
         Health status and model loading state
     """
+    status = "healthy" if embedding_model is not None else "initializing"
+    logger.debug(
+        f"Health check: status={status}, model_loaded={embedding_model is not None}")
     return HealthResponse(
-        status="healthy" if embedding_model is not None else "initializing",
+        status=status,
         model_loaded=embedding_model is not None,
         timestamps=({"timestamp": time.time(),
                      "startup_time": app.state.startup_time,
@@ -116,7 +127,11 @@ async def health_check():
 async def create_embeddings(request: EmbeddingRequest, response: Response):
     start_time = time.perf_counter()
 
+    logger.info(
+        f"Received embedding request: model={request.model}, encoding_format={request.encoding_format}")
+
     if embedding_model is None:
+        logger.error("Embedding request rejected: model not loaded yet")
         raise HTTPException(status_code=503, detail="Model not loaded yet")
 
     try:
@@ -127,8 +142,11 @@ async def create_embeddings(request: EmbeddingRequest, response: Response):
             inputs = request.input
 
         if not inputs:
+            logger.warning("Embedding request rejected: empty input")
             raise HTTPException(
                 status_code=400, detail="Input cannot be empty")
+
+        logger.info(f"Processing {len(inputs)} input(s)")
 
         # Get embeddings
         embed_start = time.perf_counter()
@@ -137,6 +155,8 @@ async def create_embeddings(request: EmbeddingRequest, response: Response):
         else:
             embeddings = embedding_model.embed_docs(inputs)
         embed_time = (time.perf_counter() - embed_start) * 1000
+
+        logger.debug(f"Embedding generation completed in {embed_time:.2f}ms")
 
         # Build response data
         build_start = time.perf_counter()
@@ -159,6 +179,9 @@ async def create_embeddings(request: EmbeddingRequest, response: Response):
         # Add Server-Timing header
         response.headers["Server-Timing"] = f"embed;dur={embed_time:.2f}, build;dur={build_time:.2f}, total;dur={total_time:.2f}"
 
+        logger.info(f"Embedding request completed: inputs={len(inputs)}, tokens={total_tokens}, "
+                    f"embed_time={embed_time:.2f}ms, build_time={build_time:.2f}ms, total_time={total_time:.2f}ms")
+
         return EmbeddingResponse(
             object="list",
             data=data,
@@ -169,10 +192,15 @@ async def create_embeddings(request: EmbeddingRequest, response: Response):
             )
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(
+            f"Error processing embedding request: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Error processing request: {str(e)}")
 
 
 if __name__ == "__main__":
+    logger.info(f"Starting embedding server on port {PORT}")
     uvicorn.run(app, host="0.0.0.0", port=PORT)

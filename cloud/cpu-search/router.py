@@ -77,25 +77,37 @@ def load_docid_mapping():
     global docid_mapping
     docid_path = Path(DOC_ID_MAPPING_PATH)
     if docid_path.exists():
-        print(f"Loading docid mapping from {docid_path}...")
-        with open(docid_path, "rb") as f:
-            docid_mapping = pickle.load(f)
-        print(f"Loaded {len(docid_mapping or [])} document ID mappings")
+        logger.info(f"Loading docid mapping from {docid_path}...")
+        try:
+            with open(docid_path, "rb") as f:
+                docid_mapping = pickle.load(f)
+            logger.info(
+                f"Loaded {len(docid_mapping or [])} document ID mappings")
+        except Exception as e:
+            logger.error(f"Failed to load docid mapping: {str(e)}")
+            raise
     else:
+        logger.error(f"Docid mapping file not found at {docid_path}")
         raise Exception(f"Docid mapping file not found at {docid_path}")
 
 
 def load_docs_loader():
     global docs_loader
     if DOC_DB_PATH:
-        print(f"Initializing document loader with database: {DOC_DB_PATH}")
-        docs_loader = DocsLoader(
-            db_path=DOC_DB_PATH,
-            use_compression=USE_COMPRESSION,
-            num_threads=DOCS_LOADER_NUM_THREADS)
-        print("Document loader initialized successfully")
+        logger.info(
+            f"Initializing document loader with database: {DOC_DB_PATH}, compression={USE_COMPRESSION}, threads={DOCS_LOADER_NUM_THREADS}")
+        try:
+            docs_loader = DocsLoader(
+                db_path=DOC_DB_PATH,
+                use_compression=USE_COMPRESSION,
+                num_threads=DOCS_LOADER_NUM_THREADS)
+            logger.info("Document loader initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize document loader: {str(e)}")
+            raise
     else:
-        print("DOC_DB_PATH not set, document loader will not be available")
+        logger.warning(
+            "DOC_DB_PATH not set, document loader will not be available")
         docs_loader = None
 
 
@@ -103,11 +115,15 @@ def load_docs_loader():
 async def lifespan(app: FastAPI):
     """Lifespan event handler for initialization"""
     app.state.startup_time = time.time()
+    logger.info("Application startup initiated")
     load_docid_mapping()
     load_docs_loader()
     # set startup complete time
     app.state.startup_complete_time = time.time()
+    logger.info(
+        f"Application startup complete in {app.state.startup_complete_time - app.state.startup_time:.2f}s")
     yield
+    logger.info("Application shutdown initiated")
 
 
 # FastAPI app
@@ -127,9 +143,11 @@ async def health_check():
     Returns:
         Health status and model loading state
     """
+    num_docs = len(docid_mapping) if docid_mapping is not None else 0
+    logger.debug(f"Health check: status=healthy, num_docs={num_docs}")
     return HealthResponse(
         status="healthy",
-        num_docs=len(docid_mapping) if docid_mapping is not None else 0,
+        num_docs=num_docs,
         timestamps=({"timestamp": time.time(),
                      "startup_time": app.state.startup_time,
                      "startup_complete_time": app.state.startup_complete_time})
@@ -152,6 +170,9 @@ async def search(request: SearchRequest, response: Response):
     """
     start_time = time.perf_counter()
 
+    logger.info(
+        f"Received search request: query='{request.query}', k={request.k}, complexity={request.complexity}")
+
     try:
         # Step 1: Call embedding service to embed the query
         embed_start = time.perf_counter()
@@ -164,6 +185,8 @@ async def search(request: SearchRequest, response: Response):
             embed_response = await client.post(EMBED_NODE_URL, json=embed_payload)
 
         if embed_response.status_code != 200:
+            logger.error(
+                f"Embed service error: status={embed_response.status_code}, response={embed_response.text}")
             raise HTTPException(
                 status_code=502,
                 detail=f"Embed service returned error: {embed_response.text}"
@@ -172,6 +195,8 @@ async def search(request: SearchRequest, response: Response):
         embed_data = embed_response.json()
         query_embedding = embed_data["data"][0]["embedding"]
         embed_time = (time.perf_counter() - embed_start) * 1000
+
+        logger.debug(f"Query embedded successfully in {embed_time:.2f}ms")
 
         # Step 2: Send request to DiskANN search node at localhost:51001
         search_start = time.perf_counter()
@@ -185,6 +210,8 @@ async def search(request: SearchRequest, response: Response):
             http_response = await client.post(SEARCH_NODE_URL, json=payload)
 
         if http_response.status_code != 200:
+            logger.error(
+                f"Search node error: status={http_response.status_code}, response={http_response.text}")
             raise HTTPException(
                 status_code=502,
                 detail=f"Search node returned error: {http_response.text}"
@@ -192,6 +219,8 @@ async def search(request: SearchRequest, response: Response):
 
         search_data = http_response.json()
         search_time = (time.perf_counter() - search_start) * 1000
+
+        logger.debug(f"DiskANN search completed in {search_time:.2f}ms")
 
         raw_indices = search_data["indices"]
         distances = search_data["distances"]
@@ -210,8 +239,8 @@ async def search(request: SearchRequest, response: Response):
                     distance=distance,
                     doc=None))
             else:
-                print(
-                    f"Warning: No docid mapping for raw_id {raw_id}, query: {request.query}")
+                logger.warning(
+                    f"No docid mapping for raw_id {raw_id}, query: {request.query}")
                 continue  # Skip if mapping is not available
         # translate_time = (time.perf_counter() - translate_start) * 1000
 
@@ -227,6 +256,10 @@ async def search(request: SearchRequest, response: Response):
         # Add Server-Timing header
         response.headers["Server-Timing"] = f"embed;dur={embed_time:.2f}, search;dur={search_time:.2f}, expand;dur={expand_time:.2f}, total;dur={total_time:.2f}"
 
+        logger.info(f"Search completed: query='{request.query}', results={len(results)}, "
+                    f"embed_time={embed_time:.2f}ms, search_time={search_time:.2f}ms, "
+                    f"expand_time={expand_time:.2f}ms, total_time={total_time:.2f}ms")
+
         return SearchResponse(
             results=results,
             query=request.query,
@@ -234,13 +267,16 @@ async def search(request: SearchRequest, response: Response):
         )
 
     except httpx.HTTPError as e:
-        traceback.print_exc()
+        logger.error(f"HTTP error during search: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=502,
             detail=f"Error connecting to service: {str(e)}"
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        traceback.print_exc()
+        logger.error(
+            f"Error processing search request: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Error processing search request: {str(e)}"
@@ -248,4 +284,7 @@ async def search(request: SearchRequest, response: Response):
 
 
 if __name__ == "__main__":
+    logger.info(f"Starting search router on port {PORT}")
+    logger.info(f"Search node URL: {SEARCH_NODE_URL}")
+    logger.info(f"Embed node URL: {EMBED_NODE_URL}")
     uvicorn.run(app, host="0.0.0.0", port=PORT)
