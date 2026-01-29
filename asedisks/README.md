@@ -1,10 +1,10 @@
-# ASE Dataset Search (ASEEDS)
+# ASEDISKS - ASE Disk Search
 
 A flexible framework for processing datasets and building search indexes with customizable embedding functions.
 
 ## Overview
 
-ASEEDS provides tools to:
+ASEDISKS provides tools to:
 
 - Process any dataset format through customizable async generators
 - Embed documents using any embedding service (API, local model, etc.)
@@ -22,19 +22,19 @@ ASEEDS provides tools to:
 ### Workflow
 
 ```
-Your Data → Async Generator → Embeddings → output_to_idx()
-                                              ↓
-                                    Search-Ready Files:
-                                      - documents.db (SQLite)
-                                      - embeds.bin (DiskANN)
-                                      - docids.pkl
-                                      - config.json
-                                              ↓
-                                    build_index()
-                                              ↓
-                                    DiskANN Index
-                                              ↓
-                                    Search (offline) or Server
+Your Data → Async Generator → output_to_idx(records, embed_fn)
+                                     ↓
+                           Search-Ready Files:
+                             - documents.db (SQLite)
+                             - embeds.bin (DiskANN)
+                             - docids.pkl
+                             - config.json
+                                     ↓
+                           build_index()
+                                     ↓
+                           DiskANN Index
+                                     ↓
+                           Search (offline) or Server
 ```
 
 ## Quick Start
@@ -47,46 +47,32 @@ Create `my_pipeline.py`:
 import asyncio
 from pathlib import Path
 import numpy as np
-from dataset_tools import output_to_idx, build_index, Document, OutputConfig
+from dataset_tools import output_to_idx, build_index, DataRecord, OutputConfig
 
 # Step 1: Define async data generator
 async def my_data_generator():
-    """Yield Document objects from your data source."""
-    for file_path in Path("my_data/*.json").glob("*.json"):
-        data = load_document(file_path)
-        yield Document(
-            id=data["id"],
-            title=data["title"],
-            body=data["body"],
-            whole_doc=data,
-            url=data.get("url"),
+    """Yield DataRecord objects from your data source."""
+    for item in my_data:  # Your data source
+        yield DataRecord(
+            id=item["id"],
+            content=f"{item['title']}\n{item['text']}",  # You format content
+            metadata=item,  # Full document for storage
         )
 
 # Step 2: Define async batch embed function
 async def my_batch_embed(texts: list[str]) -> np.ndarray:
     """Embed a batch of texts."""
-    # Your embedding logic here
+    # Your embedding logic here (API call, local model, etc.)
     # Return np.array of shape (len(texts), embedding_dim)
     pass
-
-async def my_embed_async_generator(documents):
-    """Wrapper to embed documents."""
-    batch = []
-    async for doc in documents:
-        batch.append(f"{doc.title} {doc.body}")
-        if len(batch) >= 100:
-            yield await my_batch_embed(batch)
-            batch = []
-    if batch:
-        yield await my_batch_embed(batch)
 
 # Step 3: Run pipeline
 async def main():
     await output_to_idx(
         output_dir=Path("data/my_dataset"),
-        documents=my_data_generator(),
-        embeddings=my_embed_async_generator(my_data_generator()),
-        config=OutputConfig(sqlite_compression=True, batch_size=1000),
+        records=my_data_generator(),
+        embed_fn=my_batch_embed,
+        config=OutputConfig(batch_size=100),
     )
     build_index(
         binary_file=Path("data/my_dataset/embeds.bin"),
@@ -117,12 +103,15 @@ async def my_batch_embed(texts: list[str]) -> np.ndarray:
     pass
 
 async def main():
-    async for result in search(
+    results = await search(
         index_dir=Path("data/my_dataset"),
-        queries_file=Path("queries.txt"),
+        queries=["What is machine learning?", "How do neural networks work?"],
         embed_fn=my_batch_embed,
         top_k=10,
-    ):
+        include_documents=True,
+    )
+
+    for result in results:
         print(f"Query: {result['query']}")
         for item in result['results']:
             print(f"  {item['rank']}: {item['doc_id']} ({item['score']:.4f})")
@@ -155,7 +144,7 @@ async def main():
         index_dir=Path("data/my_dataset"),
         host="0.0.0.0",
         port=8001,
-        embed_fn=my_embed,  # Or None for external embed node
+        embed_fn=my_embed,
     )
 
 asyncio.run(main())
@@ -177,24 +166,20 @@ curl -X POST http://localhost:8001/search \
 
 ### dataset_tools
 
-#### `Document`
+#### `DataRecord`
 ```python
-@dataclass
-class Document:
-    id: str
-    title: str
-    body: str
-    whole_doc: dict
-    url: str | None = None
-    fetched_at: str | None = None
+class DataRecord(TypedDict):
+    id: str                    # Unique document identifier
+    content: str               # Text to embed (user formats title/body/etc)
+    metadata: dict[str, Any]   # Full document for storage
 ```
 
 #### `output_to_idx()`
 ```python
 async def output_to_idx(
     output_dir: Path,
-    documents: AsyncIterator[Document],
-    embeddings: AsyncIterator[np.ndarray],
+    records: AsyncIterator[DataRecord] | Iterator[DataRecord],
+    embed_fn: Callable[[list[str]], Awaitable[np.ndarray]],
     config: Optional[OutputConfig] = None,
 )
 ```
@@ -223,18 +208,20 @@ class OutputConfig:
     sqlite_compression: bool = True
     compression_level: int = 5
     batch_size: int = 1000
-    sqlite_cache_size_mb: int = 20000
+    sqlite_cache_size_mb: int = 2000
 ```
 
 #### `DiskANNConfig`
 ```python
 @dataclass
 class DiskANNConfig:
-    metric: str = "L2"
-    index_build_threads: int = 32
-    R: int = 64
-    L: int = 100
-    search_window_size: int = 100
+    metric: str = "mips"           # "l2", "mips", "cosine"
+    R: int = 64                    # Max node degree (60-150)
+    L: int = 100                   # Build complexity (>= R)
+    build_threads: int = 32
+    build_memory_gb: int = 64      # RAM for building
+    search_memory_gb: int = 24     # RAM for search
+    diskann_bin_path: Optional[Path] = None
 ```
 
 ### search
@@ -243,11 +230,13 @@ class DiskANNConfig:
 ```python
 async def search(
     index_dir: Path,
-    queries_file: Path,
+    queries: list[str] | Path,
     embed_fn: Callable[[list[str]], Awaitable[np.ndarray]],
     top_k: int = 10,
+    complexity: int = 100,
+    include_documents: bool = False,
     output_file: Optional[Path] = None,
-) -> AsyncIterator[dict]
+) -> list[dict]
 ```
 
 Performs offline search on indexed dataset.
@@ -268,13 +257,13 @@ Runs FastAPI search router server.
 
 ```
 data/my_dataset/
-├── documents.db          # SQLite: id -> whole_doc (compressed)
-├── embeds.bin            # DiskANN: embeddings
+├── documents.db          # SQLite: id -> metadata (full document)
+├── embeds.bin            # DiskANN: [num_vectors][dim][vectors...]
 ├── docids.pkl            # List: [id1, id2, id3, ...]
-├── config.json           # Metadata: dim, num_docs, etc.
+├── config.json           # Metadata: num_docs, embedding_dim
 └── index/                # DiskANN index
-    ├── index.bin
-    └── index_metadata.bin
+    ├── index_*           # Index files
+    └── build_stats.json  # Build statistics
 ```
 
 ## Examples
@@ -285,30 +274,29 @@ data/my_dataset/
 
 ## Features
 
-- ✅ Async-first design for I/O efficiency
-- ✅ Streaming processing (minimal memory usage)
-- ✅ Python 3.14 free threading support
-- ✅ Flexible embedding (API, local model, custom)
-- ✅ Optimized for massive scale (billions of documents)
-- ✅ Zero external dependencies (except what you need)
+- Async-first design for I/O efficiency
+- Streaming processing (minimal memory usage)
+- Flexible embedding (API, local model, custom)
+- Optimized for massive scale (billions of documents)
+- Compatible with existing cloud/cpu-search infrastructure
 
 ## Requirements
 
 - Python 3.10+
 - numpy
 - sqlite3
-- Optional: zstd (for compression)
-- Optional: DiskANN (for index building)
+- Optional: diskannpy (for search)
+- Optional: fastapi, uvicorn (for server)
+- Optional: httpx (for API embedding)
 
 ## Design Philosophy
 
-ASEEDS provides **tools, not solutions**. You write:
+ASEDISKS provides **tools, not solutions**. You write:
 - Async data generator for your dataset
 - Async embed function for your model
-- Pipeline orchestration
 
 We handle:
-- Efficient multi-threaded processing
+- Efficient batch processing
 - SQLite optimization
 - DiskANN format compatibility
 - Search infrastructure
@@ -316,17 +304,37 @@ We handle:
 ## Project Structure
 
 ```
-aseeds/
+asedisks/
 ├── dataset_tools/
 │   ├── __init__.py
-│   ├── types.py
-│   ├── output_writer.py
-│   └── index_builder.py
+│   ├── types.py           # DataRecord TypedDict
+│   ├── output_writer.py   # output_to_idx()
+│   └── index_builder.py   # build_index()
 ├── search/
 │   ├── __init__.py
-│   ├── offline_search.py
-│   └── server.py
+│   ├── offline_search.py  # search()
+│   └── server.py          # run_search_router()
 ├── example_index.py
 ├── example_search_ds.py
 └── example_router.py
+```
+
+## Integration with cloud/cpu-search
+
+After building an index with ASEDISKS, you can deploy it with the existing `cloud/cpu-search` infrastructure:
+
+```bash
+# 1. Start DiskANN search node
+uv run search_api/cw22_search_api/cw22_node_generic.py \
+    --index-dir ./data/my_dataset/index \
+    --port 51001 \
+    --dimensions YOUR_EMBEDDING_DIM
+
+# 2. Start embed router (if using external embedding)
+PORT=51003 python cloud/cpu-search/router_embed.py
+
+# 3. Start search router
+DOC_ID_MAPPING_PATH=./data/my_dataset/docids.pkl \
+DOC_DB_PATH=./data/my_dataset/documents.db \
+PORT=51002 python cloud/cpu-search/router.py
 ```

@@ -9,12 +9,12 @@ This package provides tools to:
 
 from .output_writer import output_to_idx, OutputConfig
 from .index_builder import build_index, DiskANNConfig
-from .types import Document
+from .types import DataRecord
 
 __all__ = [
     'output_to_idx',
     'build_index',
-    'Document',
+    'DataRecord',
     'OutputConfig',
     'DiskANNConfig',
 ]
