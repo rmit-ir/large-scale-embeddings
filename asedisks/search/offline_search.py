@@ -97,6 +97,7 @@ async def search(
             q_emb.reshape(1, -1).astype(np.float32),
             top_k,
             complexity,
+            4,
         )
 
         # Build result
