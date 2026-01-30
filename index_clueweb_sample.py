@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 from typing import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
@@ -53,9 +54,10 @@ OUTPUT_DIR = Path(
 )
 
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "openbmb/MiniCPM-Embedding-Light")
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "32"))
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
 MAX_WORDS = int(os.environ.get("MAX_WORDS", "1024"))
 USE_FLASH_ATTN = os.environ.get("USE_FLASH_ATTN", "0") == "1"
+EMBED_GPUS = os.environ.get("EMBED_GPUS", "auto")
 
 
 # ============================================================================
@@ -123,7 +125,7 @@ class MiniCPMEmbedder:
         else:
             self.device = device
 
-        if self.device == "cuda":
+        if self.device.startswith("cuda"):
             self.dtype = torch.float16
         else:
             self.dtype = torch.float32
@@ -132,7 +134,7 @@ class MiniCPMEmbedder:
             "trust_remote_code": True,
             "torch_dtype": self.dtype,
         }
-        if USE_FLASH_ATTN and self.device == "cuda":
+        if USE_FLASH_ATTN and self.device.startswith("cuda"):
             model_kwargs["attn_implementation"] = "flash_attention_2"
 
         logger.info("Loading %s on %s...", model_name, self.device)
@@ -156,7 +158,11 @@ class MiniCPMEmbedder:
         """
         if not hasattr(self.model, "encode_corpus"):
             raise RuntimeError("Model does not implement encode_corpus().")
-        embeddings, _ = self.model.encode_corpus(texts, return_sparse_vectors=False)
+        embeddings, _ = self.model.encode_corpus(
+            texts,
+            return_sparse_vectors=False,
+            show_progress_bar=False,
+        )
         return self._to_numpy(embeddings)
 
     @torch.inference_mode()
@@ -169,19 +175,116 @@ class MiniCPMEmbedder:
         """
         if not hasattr(self.model, "encode_query"):
             raise RuntimeError("Model does not implement encode_query().")
-        embeddings, _ = self.model.encode_query(texts, return_sparse_vectors=False)
+        embeddings, _ = self.model.encode_query(
+            texts,
+            return_sparse_vectors=False,
+            show_progress_bar=False,
+        )
         return self._to_numpy(embeddings)
 
 
+def _resolve_embed_gpus(value: str) -> list[int]:
+    normalized = value.strip().lower()
+    if normalized in ("", "auto", "all"):
+        if torch.cuda.is_available():
+            return list(range(torch.cuda.device_count()))
+        return []
+    if normalized in ("cpu", "none", "off"):
+        return []
+
+    ids: list[int] = []
+    for part in value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        ids.append(int(part))
+
+    if not torch.cuda.is_available():
+        logger.warning("EMBED_GPUS=%s but CUDA is unavailable. Falling back to CPU.", value)
+        return []
+
+    max_id = torch.cuda.device_count() - 1
+    invalid = [gpu_id for gpu_id in ids if gpu_id < 0 or gpu_id > max_id]
+    if invalid:
+        raise ValueError(
+            f"EMBED_GPUS includes invalid CUDA device ids {invalid}. "
+            f"Available range: 0..{max_id}"
+        )
+    return ids
+
+
+def _split_even(items: list[str], parts: int) -> list[list[str]]:
+    if parts <= 0:
+        return [items]
+    total = len(items)
+    if total == 0:
+        return []
+    base = total // parts
+    remainder = total % parts
+    chunks: list[list[str]] = []
+    start = 0
+    for idx in range(parts):
+        size = base + (1 if idx < remainder else 0)
+        if size == 0:
+            continue
+        end = start + size
+        chunks.append(items[start:end])
+        start = end
+    return chunks
+
+
+class MultiGPUEmbedder:
+    """Run embedding across multiple GPUs in parallel (one model per GPU)."""
+
+    def __init__(self, model_name: str, device_ids: list[int]):
+        if not device_ids:
+            raise ValueError("MultiGPUEmbedder requires at least one device id.")
+        self.device_ids = device_ids
+        self.embedders = [
+            MiniCPMEmbedder(model_name=model_name, device=f"cuda:{device_id}")
+            for device_id in device_ids
+        ]
+        self.pool = ThreadPoolExecutor(max_workers=len(self.embedders))
+        logger.info("Multi-GPU embedder initialized on devices: %s", self.device_ids)
+
+    def _encode_chunks(self, texts: list[str], encoder_name: str) -> np.ndarray:
+        if not texts:
+            return np.zeros((0, 0), dtype=np.float32)
+
+        chunks = _split_even(texts, len(self.embedders))
+        if not chunks:
+            return np.zeros((0, 0), dtype=np.float32)
+
+        futures = []
+        for embedder, chunk in zip(self.embedders, chunks):
+            encoder = getattr(embedder, encoder_name)
+            futures.append(self.pool.submit(encoder, chunk))
+
+        results = [future.result() for future in futures]
+        return np.vstack(results)
+
+    def encode_passages(self, texts: list[str]) -> np.ndarray:
+        return self._encode_chunks(texts, "encode_passages")
+
+    def encode_queries(self, texts: list[str]) -> np.ndarray:
+        return self._encode_chunks(texts, "encode_queries")
+
+
 # Global embedder instance (loaded once)
-_embedder: MiniCPMEmbedder | None = None
+_embedder: MiniCPMEmbedder | MultiGPUEmbedder | None = None
 
 
-def get_embedder() -> MiniCPMEmbedder:
+def get_embedder() -> MiniCPMEmbedder | MultiGPUEmbedder:
     """Get or create embedder instance."""
     global _embedder
     if _embedder is None:
-        _embedder = MiniCPMEmbedder()
+        gpu_ids = _resolve_embed_gpus(EMBED_GPUS)
+        if len(gpu_ids) > 1:
+            _embedder = MultiGPUEmbedder(model_name=MODEL_NAME, device_ids=gpu_ids)
+        elif len(gpu_ids) == 1:
+            _embedder = MiniCPMEmbedder(device=f"cuda:{gpu_ids[0]}")
+        else:
+            _embedder = MiniCPMEmbedder()
     return _embedder
 
 

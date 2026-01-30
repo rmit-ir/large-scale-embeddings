@@ -96,6 +96,19 @@ async def output_to_idx(
     conn.commit()
 
     # Open binary file for streaming writes
+    pbar = None
+    try:
+        from tqdm import tqdm  # type: ignore
+        pbar = tqdm(
+            total=None,
+            unit=" records",
+            desc="Embedding",
+            leave=True,
+            position=1,
+            dynamic_ncols=True,
+        )
+    except Exception:
+        pbar = None
     with open(embeds_path, "wb") as embeds_file:
         # Write placeholder header (will update later)
         embeds_file.write(np.uint32(0).tobytes())  # num_vectors placeholder
@@ -111,7 +124,10 @@ async def output_to_idx(
                     batch, embed_fn, embeds_file, conn, doc_ids, embedding_dim
                 )
                 num_records += len(batch)
-                logger.info("Processed %s records...", f"{num_records:,}")
+                if pbar is not None:
+                    pbar.update(len(batch))
+                else:
+                    logger.info("Processed %s records...", f"{num_records:,}")
                 batch = []
 
         # Process remaining records
@@ -120,6 +136,8 @@ async def output_to_idx(
                 batch, embed_fn, embeds_file, conn, doc_ids, embedding_dim
             )
             num_records += len(batch)
+            if pbar is not None:
+                pbar.update(len(batch))
 
         # Update header with actual counts
         embeds_file.seek(0)
@@ -133,6 +151,8 @@ async def output_to_idx(
     # Commit and close SQLite
     conn.commit()
     conn.close()
+    if pbar is not None:
+        pbar.close()
 
     # Write config
     with open(config_path, "w") as f:
