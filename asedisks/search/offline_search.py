@@ -4,11 +4,15 @@ Offline search for indexed datasets.
 
 from pathlib import Path
 from typing import Callable, Awaitable, Optional, Union
+import os
 import numpy as np
 import pickle
 import json
 import sqlite3
 
+from asedisks.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 async def search(
     index_dir: Path,
@@ -18,6 +22,12 @@ async def search(
     complexity: int = 100,
     include_documents: bool = False,
     output_file: Optional[Path] = None,
+    num_threads: Optional[int] = None,
+    num_nodes_to_cache: Optional[int] = None,
+    cache_mechanism: Optional[int] = None,
+    distance_metric: Optional[str] = None,
+    index_prefix: Optional[str] = None,
+    beam_width: Optional[int] = None,
 ) -> list[dict]:
     """
     Perform offline search on an indexed dataset.
@@ -69,10 +79,22 @@ async def search(
 
     # Load config
     config = _load_config(index_dir / "config.json")
-    print(f"Index: {config['num_docs']:,} documents, {config['embedding_dim']} dims")
+    logger.info(
+        "Index: %s documents, %s dims",
+        f"{config['num_docs']:,}",
+        config["embedding_dim"],
+    )
 
     # Load index and docids
-    index = _load_index(index_dir / "index", config["embedding_dim"])
+    index = _load_index(
+        index_dir / "index",
+        config["embedding_dim"],
+        num_threads=num_threads,
+        num_nodes_to_cache=num_nodes_to_cache,
+        cache_mechanism=cache_mechanism,
+        distance_metric=distance_metric,
+        index_prefix=index_prefix,
+    )
     docids = _load_docids(index_dir / "docids.pkl")
 
     # Load documents database if needed
@@ -84,20 +106,26 @@ async def search(
     if isinstance(queries, Path):
         queries = _load_queries(queries)
 
-    print(f"Searching {len(queries)} queries...")
+    logger.info("Searching %s queries...", len(queries))
 
     # Embed queries
     query_embeddings = await embed_fn(queries)
 
     # Search
     results = []
+    if beam_width is None:
+        beam_width = _env_int("DISKANN_BEAM_WIDTH", 1)
+    if num_threads is None:
+        num_threads = _env_int("DISKANN_NUM_THREADS", 4)
+
     for i, (query, q_emb) in enumerate(zip(queries, query_embeddings)):
-        # DiskANN search
+        _queries = q_emb.reshape(1, -1).astype(np.float32)
         indices, distances = index.batch_search(
-            q_emb.reshape(1, -1).astype(np.float32),
-            top_k,
-            complexity,
-            4,
+            queries=_queries,
+            k_neighbors=top_k,
+            complexity=complexity,
+            num_threads=num_threads,
+            beam_width=beam_width,
         )
 
         # Build result
@@ -135,12 +163,20 @@ async def search(
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, "w") as f:
             json.dump(results, f, indent=2)
-        print(f"Results written to {output_file}")
+        logger.info("Results written to %s", output_file)
 
     return results
 
 
-def _load_index(index_dir: Path, embedding_dim: int):
+def _load_index(
+    index_dir: Path,
+    embedding_dim: int,
+    num_threads: Optional[int] = None,
+    num_nodes_to_cache: Optional[int] = None,
+    cache_mechanism: Optional[int] = None,
+    distance_metric: Optional[str] = None,
+    index_prefix: Optional[str] = None,
+):
     """
     Load DiskANN index from directory.
 
@@ -158,16 +194,37 @@ def _load_index(index_dir: Path, embedding_dim: int):
             "diskannpy not installed. Install with: pip install diskannpy"
         )
 
+    if num_threads is None:
+        num_threads = _env_int("DISKANN_NUM_THREADS", 4)
+    if num_nodes_to_cache is None:
+        num_nodes_to_cache = _env_int("DISKANN_NUM_NODES_TO_CACHE", 10000)
+    if cache_mechanism is None:
+        cache_mechanism = _env_int("DISKANN_CACHE_MECHANISM", 1)
+    if distance_metric is None:
+        distance_metric = os.environ.get("DISKANN_DISTANCE_METRIC", "mips")
+    if index_prefix is None:
+        index_prefix = os.environ.get("DISKANN_INDEX_PREFIX", "index_")
+
     return diskannpy.StaticDiskIndex(
         index_directory=str(index_dir),
-        num_threads=4,
-        num_nodes_to_cache=10000,
-        cache_mechanism=1,
-        distance_metric="mips",
+        num_threads=num_threads,
+        num_nodes_to_cache=num_nodes_to_cache,
+        cache_mechanism=cache_mechanism,
+        distance_metric=distance_metric,
         vector_dtype=np.float32,
         dimensions=embedding_dim,
-        index_prefix="index_",
+        index_prefix=index_prefix,
     )
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
 
 
 def _load_docids(path: Path) -> list[str]:

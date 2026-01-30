@@ -16,6 +16,9 @@ import pickle
 import json
 
 from .types import DataRecord
+from asedisks.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -24,7 +27,7 @@ class OutputConfig:
 
     sqlite_compression: bool = True
     compression_level: int = 5
-    batch_size: int = 1000
+    batch_size: int = 50
     sqlite_cache_size_mb: int = 2000
 
 
@@ -48,7 +51,7 @@ async def output_to_idx(
         output_dir: Directory to write output files
         records: Async or sync iterator of DataRecord objects
         embed_fn: Async function that embeds a batch of texts.
-                  Signature: async def embed_fn(texts: list[str]) -> np.ndarray
+                  Signature: async def embed_fn(texts: list[str]) -> np.ndarray, shape (len(texts), 1024)
         config: Output configuration options
 
     The function handles:
@@ -108,7 +111,7 @@ async def output_to_idx(
                     batch, embed_fn, embeds_file, conn, doc_ids, embedding_dim
                 )
                 num_records += len(batch)
-                print(f"Processed {num_records:,} records...")
+                logger.info("Processed %s records...", f"{num_records:,}")
                 batch = []
 
         # Process remaining records
@@ -142,9 +145,9 @@ async def output_to_idx(
             indent=2,
         )
 
-    print(f"Output written to {output_dir}")
-    print(f"  - {num_records:,} documents")
-    print(f"  - {embedding_dim} dimensions")
+    logger.info("Output written to %s", output_dir)
+    logger.info("  - %s documents", f"{num_records:,}")
+    logger.info("  - %s dimensions", embedding_dim)
 
 
 async def _process_batch(

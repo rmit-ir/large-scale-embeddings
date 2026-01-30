@@ -12,6 +12,9 @@ from pathlib import Path
 import numpy as np
 
 from search import search
+from asedisks.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -50,7 +53,7 @@ async def my_batch_embed(texts: list[str]) -> np.ndarray:
 
     # Placeholder: Return random embeddings for demonstration
     # Replace with actual embedding logic!
-    embedding_dim = 384
+    embedding_dim = 1024
     return np.random.randn(len(texts), embedding_dim).astype(np.float32)
 
 
@@ -75,8 +78,8 @@ async def main():
     # Alternative: Load queries from file
     # queries = Path("queries.txt")
 
-    print(f"Searching index: {index_dir}")
-    print(f"Number of queries: {len(queries)}")
+    logger.info("Searching index: %s", index_dir)
+    logger.info("Number of queries: %s", len(queries))
 
     # Perform search
     results = await search(
@@ -94,8 +97,8 @@ async def main():
         query = result["query"]
         hits = result["results"]
 
-        print(f"\nQuery: {query}")
-        print(f"Found {len(hits)} results:")
+        logger.info("Query: %s", query)
+        logger.info("Found %s results:", len(hits))
 
         for item in hits:
             doc_id = item["doc_id"]
@@ -103,11 +106,17 @@ async def main():
             rank = item["rank"]
             document = item.get("document", {})
 
-            print(f"  [{rank}] {doc_id} (score: {score:.4f})")
+            logger.info("  [%s] %s (score: %.4f)", rank, doc_id, score)
             if document:
-                print(f"      Title: {document.get('title', 'N/A')}")
+                raw_text = ""
+                if isinstance(document, dict):
+                    raw = document.get("raw", {})
+                    if isinstance(raw, dict):
+                        raw_text = raw.get("Clean-Text", "")
+                preview = " ".join(raw_text.split()[:10]) if raw_text else "N/A"
+                logger.info("      Preview: %s", preview)
 
-    print("\nResults saved to: search_results.json")
+    logger.info("Results saved to: search_results.json")
 
 
 if __name__ == "__main__":

@@ -20,6 +20,9 @@ from dataset_tools import (
     OutputConfig,
     DiskANNConfig,
 )
+from asedisks.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -140,17 +143,17 @@ async def main():
     )
 
     # Step 3a: Write search-ready files (SQLite + DiskANN binary)
-    print("Writing search-ready files...")
+    logger.info("Writing search-ready files...")
     await output_to_idx(
         output_dir=output_dir,
         records=my_data_generator(),
         embed_fn=my_batch_embed,
         config=output_config,
     )
-    print(f"Files written to {output_dir}")
+    logger.info("Files written to %s", output_dir)
 
     # Step 3b: Build DiskANN index
-    print("\nBuilding DiskANN index...")
+    logger.info("Building DiskANN index...")
     build_index(
         binary_file=output_dir / "embeds.bin",
         output_dir=output_dir / "index",
@@ -162,7 +165,7 @@ async def main():
             search_memory_gb=4,
         ),
     )
-    print(f"Index built at {output_dir / 'index'}")
+    logger.info("Index built at %s", output_dir / "index")
 
 
 if __name__ == "__main__":

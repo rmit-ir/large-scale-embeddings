@@ -12,6 +12,9 @@ from pathlib import Path
 import numpy as np
 
 from search import run_search_router
+from asedisks.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -19,17 +22,17 @@ from search import run_search_router
 # ============================================================================
 
 
-async def my_embed(query: str) -> np.ndarray:
+async def my_embed(queries: list[str]) -> np.ndarray:
     """
-    Embed a single query text.
+    Embed a batch of query texts.
 
     The search router uses this to embed queries before searching.
 
     Args:
-        query: Single query string to embed
+        queries: List of query strings to embed
 
     Returns:
-        numpy array of shape (embedding_dim,)
+        numpy array of shape (len(queries), embedding_dim)
     """
     # Option 1: Call an embedding API (e.g., your embed router)
     # import httpx
@@ -48,10 +51,10 @@ async def my_embed(query: str) -> np.ndarray:
     # embedding = model.encode(query, convert_to_numpy=True, normalize_embeddings=True)
     # return embedding
 
-    # Placeholder: Return random embedding for demonstration
+    # Placeholder: Return random embeddings for demonstration
     # Replace with actual embedding logic!
-    embedding_dim = 384
-    return np.random.randn(embedding_dim).astype(np.float32)
+    embedding_dim = 1024
+    return np.random.randn(len(queries), embedding_dim).astype(np.float32)
 
 
 # ============================================================================
@@ -67,14 +70,14 @@ async def main():
     host = "0.0.0.0"
     port = 8001
 
-    print(f"Starting search router...")
-    print(f"Index directory: {index_dir}")
-    print(f"Server: http://{host}:{port}")
-    print()
-    print("Endpoints:")
-    print(f"  POST http://{host}:{port}/search")
-    print(f"  GET  http://{host}:{port}/health")
-    print()
+    logger.info("Starting search router...")
+    logger.info("Index directory: %s", index_dir)
+    logger.info("Server: http://%s:%s", host, port)
+    logger.info("")
+    logger.info("Endpoints:")
+    logger.info("  POST http://%s:%s/search", host, port)
+    logger.info("  GET  http://%s:%s/health", host, port)
+    logger.info("")
 
     await run_search_router(
         index_dir=index_dir,
@@ -89,21 +92,21 @@ async def main():
 # ============================================================================
 
 
-async def query_server(query: str, top_k: int = 10):
+async def query_server(queries: list[str], top_k: int = 10):
     """
     Example client to query the search router server.
 
     Run this in a separate terminal after starting the server.
 
     Args:
-        query: Query string
+        queries: Query strings
         top_k: Number of results to return
     """
     import httpx
 
     url = "http://localhost:8001/search"
 
-    payload = {"query": query, "top_k": top_k, "include_document": True}
+    payload = {"queries": queries, "top_k": top_k, "include_document": True}
 
     async with httpx.AsyncClient() as client:
         response = await client.post(url, json=payload, timeout=30.0)
@@ -115,12 +118,28 @@ async def demo_client():
     """Demo client showing how to query the server."""
     query = "What is machine learning?"
 
-    print(f"Querying: {query}")
-    results = await query_server(query, top_k=5)
+    logger.info("Querying: %s", query)
+    results = await query_server([query], top_k=5)
 
-    print(f"\nResults for: {results['query']}")
-    for item in results["results"]:
-        print(f"  [{item['rank']}] {item['doc_id']} (score: {item['score']:.4f})")
+    if results.get("queries_results"):
+        for result in results["queries_results"]:
+            logger.info("Results for: %s", result["query"])
+            for item in result["results"]:
+                logger.info(
+                    "  [%s] %s (score: %.4f)",
+                    item["rank"],
+                    item["doc_id"],
+                    item["score"],
+                )
+    else:
+        logger.info("Results for: %s", results["query"])
+        for item in results["results"]:
+            logger.info(
+                "  [%s] %s (score: %.4f)",
+                item["rank"],
+                item["doc_id"],
+                item["score"],
+            )
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ This script:
 2. Embeds them using MiniCPM-Embedding-Light locally (Transformers)
 3. Builds a DiskANN index
 4. Runs test searches
+
+docker run --rm --gpus all     -v /home/ubuntu/projects/large-scale-embeddings:/app/large-scale-embeddings     -w /app/large-scale-embeddings     -e CLUEWEB_ROOT=/app/large-scale-embeddings/data/datasets/clueweb22-b     diskann-ase:latest     bash -lc "MAX_DOCS=0 BATCH_SIZE=20 python3 index_clueweb_sample.py search^C| tee worklogs/clueweb22_full.3.log
 """
 
 import asyncio
@@ -26,6 +28,9 @@ from asedisks.dataset_tools import (
     DiskANNConfig,
 )
 from asedisks.search import search
+from asedisks.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -37,7 +42,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 CLUEWEB_ROOT = Path(
     os.environ.get(
         "CLUEWEB_ROOT",
-        "/home/ubuntu/projects/large-scale-embeddings/data/datasets/clueweb22-b",
+        "/home/ubuntu/projects/large-scale-embeddings/data/datasets/clueweb22-b/txt",
     )
 )
 OUTPUT_DIR = Path(
@@ -48,8 +53,8 @@ OUTPUT_DIR = Path(
 )
 
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "openbmb/MiniCPM-Embedding-Light")
-MAX_DOCS = int(os.environ.get("MAX_DOCS", "1000"))  # Limit for testing (set to 0 for all)
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "32"))
+MAX_WORDS = int(os.environ.get("MAX_WORDS", "1024"))
 USE_FLASH_ATTN = os.environ.get("USE_FLASH_ATTN", "0") == "1"
 
 
@@ -64,53 +69,33 @@ class ClueWeb22Reader:
     def __init__(self, root_path: Path):
         self.root_path = root_path
 
-    def iter_documents(self, max_docs: int | None = None):
+    def iter_documents(self):
         """
         Iterate over all documents in the dataset.
 
         Yields:
-            Tuple of (doc_id, doc_data) where doc_data is parsed JSON
+            Tuple of (fake_id, doc_data) where doc_data is parsed JSON
         """
-        txt_path = self.root_path / "txt"
+        for json_gz in self.root_path.rglob("*.json.gz"):
+            shard_name = json_gz.stem.replace(".json", "")
 
-        # Find all .json.gz files
-        for json_gz in txt_path.rglob("*.json.gz"):
-            offset_path = json_gz.with_suffix("").with_suffix(".offset")
-
-            if not offset_path.exists():
-                continue
-
-            # Parse shard info from filename: en0000-00.json.gz -> en0000, 00
-            shard_name = json_gz.stem.replace(".json", "")  # en0000-00
-
-            # Count documents in this shard
-            with open(offset_path, "r") as f:
-                offsets = f.readlines()
-            num_docs = len(offsets) - 1  # Last line is end offset
-
-            # Read documents
-            count = 0
             with open(json_gz, "rb") as f_json:
-                for doc_idx in range(num_docs):
-                    if max_docs and count >= max_docs:
-                        return
+                decompressed = gzip.decompress(f_json.read()).decode(
+                    "utf-8",
+                    errors="ignore",
+                )
 
-                    # Read offsets
-                    start_bytes = int(offsets[doc_idx].strip())
-                    end_bytes = int(offsets[doc_idx + 1].strip())
+            for line_idx, line in enumerate(decompressed.splitlines()):
+                if not line.strip():
+                    continue
 
-                    # Read and decompress record
-                    f_json.seek(start_bytes)
-                    record = f_json.read(end_bytes - start_bytes)
-                    record = gzip.decompress(record).decode("utf-8")
+                try:
+                    doc_data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
-                    try:
-                        doc_data = json.loads(record)
-                        doc_id = f"clueweb22-{shard_name}-{doc_idx:05d}"
-                        yield doc_id, doc_data
-                        count += 1
-                    except json.JSONDecodeError:
-                        continue
+                fake_id = f"clueweb22-{shard_name}-{line_idx:05d}"
+                yield fake_id, doc_data
 
 
 # ============================================================================
@@ -150,11 +135,11 @@ class MiniCPMEmbedder:
         if USE_FLASH_ATTN and self.device == "cuda":
             model_kwargs["attn_implementation"] = "flash_attention_2"
 
-        print(f"Loading {model_name} on {self.device}...")
+        logger.info("Loading %s on %s...", model_name, self.device)
         self.model = AutoModel.from_pretrained(model_name, **model_kwargs).to(self.device)
         self.model.eval()
 
-        print("Model loaded.")
+        logger.info("Model loaded.")
 
     def _to_numpy(self, embeddings) -> np.ndarray:
         if isinstance(embeddings, torch.Tensor):
@@ -205,46 +190,44 @@ def get_embedder() -> MiniCPMEmbedder:
 # ============================================================================
 
 
-async def clueweb_records(max_docs: int | None = MAX_DOCS) -> AsyncIterator[DataRecord]:
+def _truncate_first_n_words(text: str, max_words: int) -> str:
+    if not text:
+        return text
+    if max_words <= 0:
+        return text
+    count = 0
+    for idx, ch in enumerate(text):
+        if ch == " ":
+            count += 1
+            if count == max_words - 1:
+                return text[:idx]
+    return text
+
+
+async def clueweb_records() -> AsyncIterator[DataRecord]:
     """
     Async generator yielding DataRecord from ClueWeb22-B sample.
-
-    Args:
-        max_docs: Maximum documents to process (0 for all)
 
     Yields:
         DataRecord objects
     """
     reader = ClueWeb22Reader(CLUEWEB_ROOT)
-    effective_max = None if max_docs == 0 else max_docs
 
-    for doc_id, doc_data in reader.iter_documents(max_docs=effective_max):
-        # Extract clean text
+    for fake_id, doc_data in reader.iter_documents():
         clean_text = doc_data.get("Clean-Text", "")
-        clueweb_id = doc_data.get("ClueWeb22-ID", doc_id)
+        clueweb_id = doc_data.get("ClueWeb22-ID", fake_id)
 
         if not clean_text.strip():
             continue
 
-        # Extract title from first line
-        lines = clean_text.split("\n", 1)
-        title = lines[0].strip()[:500] if lines else ""
-        body = lines[1].strip() if len(lines) > 1 else clean_text
-
-        # Format content for embedding
-        content = f"{title}\n\n{body}"
-
-        # Truncate to reasonable length (model max is 8192 tokens)
-        content = content[:8000]
+        content = _truncate_first_n_words(clean_text, MAX_WORDS)
 
         yield DataRecord(
             id=clueweb_id,
             content=content,
             metadata={
                 "id": clueweb_id,
-                "title": title,
-                "text": clean_text[:2000],
-                "url": doc_data.get("URL", ""),
+                "raw": doc_data,
             },
         )
 
@@ -273,14 +256,14 @@ async def embed_queries_batch(texts: list[str]) -> np.ndarray:
 
 async def run_indexing():
     """Run the indexing pipeline."""
-    print("=" * 60)
-    print("ASEDISKS - ClueWeb22-B Sample Indexing")
-    print("=" * 60)
-    print(f"Source: {CLUEWEB_ROOT}")
-    print(f"Output: {OUTPUT_DIR}")
-    print(f"Max docs: {MAX_DOCS if MAX_DOCS != 0 else 'ALL'}")
-    print(f"Batch size: {BATCH_SIZE}")
-    print()
+    logger.info("=" * 60)
+    logger.info("ASEDISKS - ClueWeb22-B Sample Indexing")
+    logger.info("=" * 60)
+    logger.info("Source: %s", CLUEWEB_ROOT)
+    logger.info("Output: %s", OUTPUT_DIR)
+    logger.info("Max docs: ALL")
+    logger.info("Batch size: %s", BATCH_SIZE)
+    logger.info("")
 
     if not CLUEWEB_ROOT.exists():
         raise FileNotFoundError(f"Dataset path not found: {CLUEWEB_ROOT}")
@@ -289,10 +272,10 @@ async def run_indexing():
     get_embedder()
 
     # Run indexing
-    print("Starting indexing...")
+    logger.info("Starting indexing...")
     await output_to_idx(
         output_dir=OUTPUT_DIR,
-        records=clueweb_records(max_docs=MAX_DOCS),
+        records=clueweb_records(),
         embed_fn=embed_batch,
         config=OutputConfig(
             batch_size=BATCH_SIZE,
@@ -300,15 +283,15 @@ async def run_indexing():
         ),
     )
 
-    print("\nIndexing complete!")
-    print(f"Output files in: {OUTPUT_DIR}")
+    logger.info("Indexing complete!")
+    logger.info("Output files in: %s", OUTPUT_DIR)
 
 
-async def run_index_build():
+async def run_diskann_build():
     """Build DiskANN index."""
-    print("\n" + "=" * 60)
-    print("Building DiskANN Index")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("Building DiskANN Index")
+    logger.info("=" * 60)
 
     build_index(
         binary_file=OUTPUT_DIR / "embeds.bin",
@@ -321,14 +304,14 @@ async def run_index_build():
             search_memory_gb=2,
         ),
     )
-    print("Index build complete!")
+    logger.info("Index build complete!")
 
 
 async def run_search_test():
     """Run test searches."""
-    print("\n" + "=" * 60)
-    print("Running Test Searches")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("Running Test Searches")
+    logger.info("=" * 60)
 
     queries = [
         "machine learning artificial intelligence",
@@ -338,7 +321,7 @@ async def run_search_test():
         "travel vacation destinations",
     ]
 
-    print(f"Testing {len(queries)} queries...")
+    logger.info("Testing %s queries...", len(queries))
 
     if not (OUTPUT_DIR / "index").exists():
         raise FileNotFoundError("DiskANN index not found. Run the build step first.")
@@ -352,19 +335,24 @@ async def run_search_test():
         include_documents=True,
     )
 
-    print("\n" + "-" * 60)
+    logger.info("-" * 60)
     for result in results:
-        print(f"\nQuery: {result['query']}")
-        print("Results:")
+        logger.info("Query: %s", result["query"])
+        logger.info("Results:")
         for item in result["results"][:3]:
             doc = item.get("document", {})
-            title = doc.get("title", "N/A")[:60]
-            print(f"  [{item['rank']}] {item['doc_id']}")
-            print(f"      Score: {item['score']:.4f}")
-            print(f"      Title: {title}...")
+            raw_text = ""
+            if isinstance(doc, dict):
+                raw = doc.get("raw", {})
+                if isinstance(raw, dict):
+                    raw_text = raw.get("Clean-Text", "")
+            preview = " ".join(raw_text.split()[:10]) if raw_text else "N/A"
+            logger.info("  [%s] %s", item["rank"], item["doc_id"])
+            logger.info("      Score: %.4f", item["score"])
+            logger.info("      Preview: %s", preview)
 
-    print("\n" + "-" * 60)
-    print("Search test complete!")
+    logger.info("-" * 60)
+    logger.info("Search test complete!")
 
 
 # ============================================================================
@@ -381,19 +369,19 @@ async def main():
         if command == "index":
             await run_indexing()
         elif command == "build":
-            await run_index_build()
+            await run_diskann_build()
         elif command == "search":
             await run_search_test()
         elif command == "all":
             await run_indexing()
-            await run_index_build()
+            await run_diskann_build()
             await run_search_test()
         else:
-            print(f"Unknown command: {command}")
-            print("Usage: python index_clueweb_sample.py [index|build|search|all]")
+            logger.error("Unknown command: %s", command)
+            logger.error("Usage: python index_clueweb_sample.py [index|build|search|all]")
     else:
         await run_indexing()
-        await run_index_build()
+        await run_diskann_build()
         await run_search_test()
 
 

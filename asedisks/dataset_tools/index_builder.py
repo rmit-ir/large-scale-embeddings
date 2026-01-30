@@ -10,6 +10,10 @@ import shutil
 import json
 import numpy as np
 
+from asedisks.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 @dataclass
 class DiskANNConfig:
@@ -65,18 +69,18 @@ def build_index(
         raise FileNotFoundError(f"Binary file not found: {binary_file}")
 
     num_vectors, embedding_dim = _read_binary_header(binary_file)
-    print(f"Building index:")
-    print(f"  Vectors: {num_vectors:,}")
-    print(f"  Dimensions: {embedding_dim}")
-    print(f"  Metric: {config.metric}")
-    print(f"  R (max degree): {config.R}")
-    print(f"  L (build complexity): {config.L}")
-    print(f"  Build memory: {config.build_memory_gb} GB")
-    print(f"  Search memory: {config.search_memory_gb} GB")
+    logger.info("Building index:")
+    logger.info("  Vectors: %s", f"{num_vectors:,}")
+    logger.info("  Dimensions: %s", embedding_dim)
+    logger.info("  Metric: %s", config.metric)
+    logger.info("  R (max degree): %s", config.R)
+    logger.info("  L (build complexity): %s", config.L)
+    logger.info("  Build memory: %s GB", config.build_memory_gb)
+    logger.info("  Search memory: %s GB", config.search_memory_gb)
 
     # Find DiskANN binary
     diskann_path = _find_diskann(config.diskann_bin_path)
-    print(f"  Using DiskANN: {diskann_path}")
+    logger.info("  Using DiskANN: %s", diskann_path)
 
     # Build command
     index_prefix = output_dir / "index_"
@@ -102,17 +106,17 @@ def build_index(
         str(config.build_threads),
     ]
 
-    print(f"\nRunning: {' '.join(cmd)}\n")
+    logger.info("Running: %s", " ".join(cmd))
 
     # Run build
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
-        print(f"STDOUT: {result.stdout}")
-        print(f"STDERR: {result.stderr}")
+        logger.error("STDOUT: %s", result.stdout)
+        logger.error("STDERR: %s", result.stderr)
         raise RuntimeError(f"DiskANN build failed with code {result.returncode}")
 
-    print(result.stdout)
+    logger.info(result.stdout)
 
     # Save build stats
     stats = {
@@ -131,8 +135,8 @@ def build_index(
     with open(stats_path, "w") as f:
         json.dump(stats, f, indent=2)
 
-    print(f"\nIndex built at {output_dir}")
-    print(f"Stats saved to {stats_path}")
+    logger.info("Index built at %s", output_dir)
+    logger.info("Stats saved to %s", stats_path)
 
 
 def _read_binary_header(binary_file: Path) -> tuple[int, int]:
@@ -174,14 +178,16 @@ def _validate_binary_format(binary_file: Path) -> bool:
         actual_size = binary_file.stat().st_size
 
         if actual_size != expected_size:
-            print(
-                f"Size mismatch: expected {expected_size}, got {actual_size}"
+            logger.error(
+                "Size mismatch: expected %s, got %s",
+                expected_size,
+                actual_size,
             )
             return False
 
         return True
     except Exception as e:
-        print(f"Validation failed: {e}")
+        logger.error("Validation failed: %s", e)
         return False
 
 
@@ -223,7 +229,7 @@ def _find_diskann(custom_path: Optional[Path]) -> Path:
         return Path(which_result).parent
 
     raise FileNotFoundError(
-        "DiskANN not found. Please install DiskANN and either:\n"
+        "DiskANN (build_disk_index) not found. Please install DiskANN and either:\n"
         "  1. Add to PATH\n"
         "  2. Set diskann_bin_path in DiskANNConfig\n"
         "  3. Place in ./DiskANN/build/apps/"
