@@ -12,11 +12,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3 -m pip install --no-cache-dir --upgrade pip \
   && python3 -m pip install --no-cache-dir \
     numpy \
-    "torch==2.4.1+cu121" --index-url https://download.pytorch.org/whl/cu121 \
+    "torch==2.4.1" --index-url https://download.pytorch.org/whl/cpu \
   && python3 -m pip install --no-cache-dir \
     "transformers==4.37.2" \
     sentencepiece \
     protobuf \
     diskannpy
 
+COPY cloud/dockerfiles/torch-cuda-entrypoint.sh /usr/local/bin/torch-cuda-entrypoint.sh
+RUN chmod 755 /usr/local/bin/torch-cuda-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/torch-cuda-entrypoint.sh"]
 WORKDIR /app/large-scale-embeddings
