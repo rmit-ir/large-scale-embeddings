@@ -7,7 +7,15 @@ This script:
 3. Builds a DiskANN index
 4. Runs test searches
 
-docker run --rm --gpus all     -v /home/ubuntu/projects/large-scale-embeddings:/app/large-scale-embeddings     -w /app/large-scale-embeddings     -e CLUEWEB_ROOT=/app/large-scale-embeddings/data/datasets/clueweb22-b     diskann-ase:latest     bash -lc "MAX_DOCS=0 BATCH_SIZE=20 python3 index_clueweb_sample.py search^C| tee worklogs/clueweb22_full.3.log
+docker run --rm --gpus all \
+    -v /home/ubuntu/projects/large-scale-embeddings:/app/large-scale-embeddings \
+    -w /app/large-scale-embeddings \
+    -e CLUEWEB_ROOT=/app/large-scale-embeddings/data/datasets/clueweb22-b \
+    -e BATCH_SIZE=8 \
+    -e MAX_WORDS=1024 \
+    docker.io/rankun203/diskann-ase:latest \
+    bash -lc "python3 index_clueweb_sample.py all" \
+    | tee worklogs/clueweb22_full.4gpu.log
 """
 
 import asyncio
@@ -60,6 +68,7 @@ OUTPUT_DIR = Path(
 
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "openbmb/MiniCPM-Embedding-Light")
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
+MODEL_BATCH_SIZE = int(os.environ.get("MODEL_BATCH_SIZE", '32'))
 MAX_WORDS = int(os.environ.get("MAX_WORDS", "1024"))
 EMBED_GPUS = os.environ.get("EMBED_GPUS", "auto")
 
@@ -122,6 +131,7 @@ class MiniCPMEmbedder:
             raise RuntimeError("Model does not implement encode_corpus().")
         embeddings, _ = self.model.encode_corpus(
             texts,
+            batch_size=MODEL_BATCH_SIZE,
             return_sparse_vectors=False,
             show_progress_bar=False,
         )
@@ -139,6 +149,7 @@ class MiniCPMEmbedder:
             raise RuntimeError("Model does not implement encode_query().")
         embeddings, _ = self.model.encode_query(
             texts,
+            batch_size=MODEL_BATCH_SIZE,
             return_sparse_vectors=False,
             show_progress_bar=False,
         )
@@ -206,7 +217,10 @@ async def clueweb_records(batch_size: int = BATCH_SIZE) -> AsyncIterator[list[Da
                 errors="ignore",
             )
 
-        for line_idx, line in enumerate(decompressed.splitlines()):
+        lines = list(decompressed.splitlines())
+        lines.sort(key=len, reverse=True)
+
+        for line_idx, line in enumerate(lines):
             if not line.strip():
                 continue
 
@@ -243,7 +257,7 @@ async def clueweb_records(batch_size: int = BATCH_SIZE) -> AsyncIterator[list[Da
         yield batch
 
     if hasattr(file_iter, "close"):
-        file_iter.close()
+        file_iter.close() # type: ignore
 
 
 # ============================================================================
