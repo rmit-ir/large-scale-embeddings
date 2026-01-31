@@ -1,5 +1,5 @@
 """
-Index ClueWeb22-B sample dataset using ASEDISKS.
+Index ClueWeb22-B sample dataset using ASEANN.
 
 This script:
 1. Reads documents from ClueWeb22-B sample data
@@ -28,16 +28,16 @@ from typing import AsyncIterator
 import numpy as np
 import torch
 
-from asedisks.dataset_tools import (
+from aseann.dataset_tools import (
     output_to_idx,
     build_index,
     DataRecord,
     OutputConfig,
     DiskANNConfig,
 )
-from asedisks.search import search
-from asedisks.logging_utils import get_logger
-from asedisks.utils import (
+from aseann.search import search
+from aseann.logging_utils import get_logger
+from aseann.utils import (
     truncate_first_n_words,
     MultiGPUEmbedder,
     EmbedderProtocol,
@@ -62,7 +62,7 @@ CLUEWEB_ROOT = Path(
 OUTPUT_DIR = Path(
     os.environ.get(
         "CLUEWEB_OUTPUT_DIR",
-        str(REPO_ROOT / "data/asedisks_test/clueweb22-sample"),
+        str(REPO_ROOT / "data/aseann_test/clueweb22-sample"),
     )
 )
 
@@ -285,7 +285,7 @@ async def embed_queries_batch(texts: list[str]) -> np.ndarray:
 async def run_indexing():
     """Run the indexing pipeline."""
     logger.info("=" * 60)
-    logger.info("ASEDISKS - ClueWeb22-B Sample Indexing")
+    logger.info("ASEANN - ClueWeb22-B Sample Indexing")
     logger.info("=" * 60)
     logger.info("Source: %s", CLUEWEB_ROOT)
     logger.info("Output: %s", OUTPUT_DIR)

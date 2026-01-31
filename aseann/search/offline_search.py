@@ -10,7 +10,7 @@ import pickle
 import json
 import sqlite3
 
-from asedisks.logging_utils import get_logger
+from aseann.logging_utils import get_logger
 
 logger = get_logger(__name__)
 

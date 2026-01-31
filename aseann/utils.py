@@ -2,7 +2,7 @@
 Shared utilities for dataset pipelines and embedding workers.
 
 Simple usage examples:
-    from asedisks.utils import (
+    from aseann.utils import (
         ensure_async,
         split_even,
         truncate_first_n_words,

@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from search import run_search_router
-from asedisks.logging_utils import get_logger
+from aseann.logging_utils import get_logger
 
 logger = get_logger(__name__)
 

@@ -1,10 +1,10 @@
-# ASEDISKS - ASE Disk Search
+# ASEANN - ASE Disk Search
 
 A flexible framework for processing datasets and building search indexes with customizable embedding functions.
 
 ## Overview
 
-ASEDISKS provides tools to:
+ASEANN provides tools to:
 
 - Process any dataset format through customizable async batch generators
 - Embed documents using any embedding service (API, local model, etc.)
@@ -303,7 +303,7 @@ data/my_dataset/
 
 ## Design Philosophy
 
-ASEDISKS provides **tools, not solutions**. You write:
+ASEANN provides **tools, not solutions**. You write:
 - Async data generator for your dataset
 - Async embed function for your model
 
@@ -316,7 +316,7 @@ We handle:
 ## Project Structure
 
 ```
-asedisks/
+aseann/
 ├── dataset_tools/
 │   ├── __init__.py
 │   ├── types.py           # DataRecord TypedDict
@@ -333,7 +333,7 @@ asedisks/
 
 ## Integration with cloud/cpu-search
 
-After building an index with ASEDISKS, you can deploy it with the existing `cloud/cpu-search` infrastructure:
+After building an index with ASEANN, you can deploy it with the existing `cloud/cpu-search` infrastructure:
 
 ```bash
 # 1. Start DiskANN search node

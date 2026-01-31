@@ -10,7 +10,7 @@ import pickle
 import json
 import sqlite3
 
-from asedisks.logging_utils import get_logger
+from aseann.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -115,7 +115,7 @@ def _create_fastapi_app(
     index_dir = Path(index_dir)
 
     app = FastAPI(
-        title="ASEDISKS Search",
+        title="ASEANN Search",
         description="Search API for indexed datasets",
         version="1.0.0",
     )

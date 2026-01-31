@@ -19,8 +19,8 @@ import threading
 import numpy as np
 
 from .types import DataRecord
-from asedisks.utils import ensure_async
-from asedisks.logging_utils import get_logger
+from aseann.utils import ensure_async
+from aseann.logging_utils import get_logger
 
 logger = get_logger(__name__)
 

@@ -1,5 +1,5 @@
 """
-Logging utilities for ASEDISKS.
+Logging utilities for ASEANN.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import sys
 
 
 def _resolve_log_level() -> int:
-    level_name = os.environ.get("ASEDISKS_LOG_LEVEL", "INFO").upper()
+    level_name = os.environ.get("ASEANN_LOG_LEVEL", "INFO").upper()
     return getattr(logging, level_name, logging.INFO)
 
 
@@ -28,4 +28,4 @@ def setup_logging() -> None:
 
 def get_logger(name: str | None = None) -> logging.Logger:
     setup_logging()
-    return logging.getLogger(name if name else "asedisks")
+    return logging.getLogger(name if name else "aseann")

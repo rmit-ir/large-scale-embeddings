@@ -10,7 +10,7 @@ import shutil
 import json
 import numpy as np
 
-from asedisks.logging_utils import get_logger
+from aseann.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
