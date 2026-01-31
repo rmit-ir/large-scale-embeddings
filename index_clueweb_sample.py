@@ -78,7 +78,22 @@ class ClueWeb22Reader:
         Yields:
             Tuple of (fake_id, doc_data) where doc_data is parsed JSON
         """
-        for json_gz in self.root_path.rglob("*.json.gz"):
+        json_files = sorted(self.root_path.rglob("*.json.gz"))
+        try:
+            from tqdm import tqdm  # type: ignore
+
+            file_iter = tqdm(
+                json_files,
+                unit=" file",
+                desc="Files",
+                leave=True,
+                position=0,
+                dynamic_ncols=True,
+            )
+        except Exception:
+            file_iter = json_files
+
+        for json_gz in file_iter:
             shard_name = json_gz.stem.replace(".json", "")
 
             with open(json_gz, "rb") as f_json:
@@ -98,6 +113,9 @@ class ClueWeb22Reader:
 
                 fake_id = f"clueweb22-{shard_name}-{line_idx:05d}"
                 yield fake_id, doc_data
+
+        if hasattr(file_iter, "close"):
+            file_iter.close()
 
 
 # ============================================================================
