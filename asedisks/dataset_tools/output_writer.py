@@ -19,6 +19,7 @@ import threading
 import numpy as np
 
 from .types import DataRecord
+from asedisks.utils import ensure_async
 from asedisks.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -32,8 +33,7 @@ class OutputConfig:
     compression_level: int = 5
     batch_size: int = 50
     sqlite_cache_size_mb: int = 2000
-    threaded: bool = False
-    prefetch_batches: int = 4
+    prefetch_batches: int = 100
     sqlite_commit_every: int = 100
 
 
@@ -72,185 +72,13 @@ async def output_to_idx(
         output_dir/config.json: Metadata (num_docs, embedding_dim, etc.)
     """
     config = config or OutputConfig()
-    if config.threaded:
-        await asyncio.to_thread(
-            _output_to_idx_threaded,
-            output_dir,
-            records,
-            embed_fn,
-            config,
-        )
-        return
-    await _output_to_idx_async(output_dir, records, embed_fn, config)
-
-
-async def _output_to_idx_async(
-    output_dir: Path,
-    records: Union[AsyncIterator[list[DataRecord]], Iterator[list[DataRecord]]],
-    embed_fn: Callable[[list[str]], Awaitable[np.ndarray]],
-    config: OutputConfig,
-):
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Initialize outputs
-    embedding_dim: Optional[int] = None
-    num_records = 0
-
-    # File paths
-    embeds_path = output_dir / "embeds.bin"
-    docids_path = output_dir / "docids.pkl"
-    db_path = output_dir / "documents.db"
-    config_path = output_dir / "config.json"
-
-    doc_ids: list[str] = []
-
-    # Initialize SQLite
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA cache_size=-{config.sqlite_cache_size_mb * 1024}")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS documents (
-            doc_id TEXT PRIMARY KEY,
-            json_data TEXT NOT NULL
-        )
-    """
+    await asyncio.to_thread(
+        _output_to_idx_threaded,
+        output_dir,
+        records,
+        embed_fn,
+        config,
     )
-    conn.commit()
-
-    # Open binary file for streaming writes
-    pbar = None
-    try:
-        from tqdm import tqdm  # type: ignore
-        pbar = tqdm(
-            total=None,
-            unit=" records",
-            desc="Embedding",
-            leave=True,
-            position=1,
-            dynamic_ncols=True,
-        )
-    except Exception:
-        pbar = None
-    with open(embeds_path, "wb") as embeds_file:
-        # Write placeholder header (will update later)
-        embeds_file.write(np.uint32(0).tobytes())  # num_vectors placeholder
-        embeds_file.write(np.uint32(0).tobytes())  # dimensions placeholder
-
-        async for batch in _ensure_async(records):
-            if not batch:
-                continue
-            embedding_dim = await _process_batch(
-                batch, embed_fn, embeds_file, conn, doc_ids, embedding_dim
-            )
-            num_records += len(batch)
-            if pbar is not None:
-                pbar.update(len(batch))
-            else:
-                logger.info("Processed %s records...", f"{num_records:,}")
-
-        # Update header with actual counts
-        embeds_file.seek(0)
-        embeds_file.write(np.uint32(num_records).tobytes())
-        embeds_file.write(np.uint32(embedding_dim or 0).tobytes())
-
-    # Save docids
-    with open(docids_path, "wb") as f:
-        pickle.dump(doc_ids, f)
-
-    # Commit and close SQLite
-    conn.commit()
-    conn.close()
-    if pbar is not None:
-        pbar.close()
-
-    # Write config
-    with open(config_path, "w") as f:
-        json.dump(
-            {
-                "num_docs": num_records,
-                "embedding_dim": embedding_dim,
-            },
-            f,
-            indent=2,
-        )
-
-    logger.info("Output written to %s", output_dir)
-    logger.info("  - %s documents", f"{num_records:,}")
-    logger.info("  - %s dimensions", embedding_dim)
-
-
-async def _process_batch(
-    batch: list[DataRecord],
-    embed_fn: Callable[[list[str]], Awaitable[np.ndarray]],
-    embeds_file,
-    conn: sqlite3.Connection,
-    doc_ids: list[str],
-    embedding_dim: Optional[int],
-) -> int:
-    """
-    Process a single batch of records.
-
-    Args:
-        batch: List of DataRecord objects
-        embed_fn: Embedding function
-        embeds_file: Open binary file handle
-        conn: SQLite connection
-        doc_ids: List to append document IDs
-        embedding_dim: Current embedding dimension (or None if not yet set)
-
-    Returns:
-        Embedding dimension
-    """
-    # Get embeddings
-    texts = [r["content"] for r in batch]
-    embeddings = await embed_fn(texts)
-
-    # Validate/set embedding dimension
-    if embedding_dim is None:
-        embedding_dim = embeddings.shape[1]
-    elif embeddings.shape[1] != embedding_dim:
-        raise ValueError(
-            f"Embedding dimension mismatch: expected {embedding_dim}, "
-            f"got {embeddings.shape[1]}"
-        )
-
-    # Write embeddings to binary (DiskANN format)
-    embeds_file.write(embeddings.astype(np.float32).tobytes())
-
-    # Write to SQLite
-    cursor = conn.cursor()
-    for record in batch:
-        doc_ids.append(record["id"])
-        json_data = json.dumps(record["metadata"])
-        cursor.execute(
-            "INSERT OR REPLACE INTO documents (doc_id, json_data) VALUES (?, ?)",
-            (record["id"], json_data),
-        )
-    conn.commit()
-
-    return embedding_dim
-
-
-async def _ensure_async(
-    iterable: Union[AsyncIterator[list[DataRecord]], Iterator[list[DataRecord]]]
-) -> AsyncIterator[list[DataRecord]]:
-    """
-    Convert sync iterator to async if needed.
-
-    Args:
-        iterable: Sync or async iterator
-
-    Yields:
-        DataRecord objects
-    """
-    if hasattr(iterable, "__aiter__"):
-        async for item in iterable:  # type: ignore
-            yield item
-    else:
-        for item in iterable:  # type: ignore
-            yield item
 
 
 def _output_to_idx_threaded(
@@ -267,7 +95,6 @@ def _output_to_idx_threaded(
     error_queue: queue.Queue[BaseException] = queue.Queue()
     stop_event = threading.Event()
     sentinel = object()
-
     def _queue_put(q: queue.Queue[object], item: object) -> bool:
         while not stop_event.is_set():
             try:
@@ -296,7 +123,7 @@ def _output_to_idx_threaded(
     def _run_reader():
         try:
             async def _read():
-                async for batch in _ensure_async(records):
+                async for batch in ensure_async(records):
                     if stop_event.is_set():
                         break
                     if batch:
@@ -411,6 +238,10 @@ def _output_to_idx_threaded(
                     num_records += len(batch)
                     if pbar is not None:
                         pbar.update(len(batch))
+                        pbar.set_postfix(
+                            read_q=read_queue.qsize(),
+                            write_q=write_queue.qsize(),
+                        )
                     else:
                         logger.info("Processed %s records...", f"{num_records:,}")
 

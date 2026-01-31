@@ -74,7 +74,7 @@ async def my_batch_embed(texts: list[str]) -> np.ndarray:
     # Return np.array of shape (len(texts), embedding_dim)
     pass
 
-# Step 3: Run pipeline
+# Step 3: Run pipeline (threaded writer + embedder pipeline)
 async def main():
     await output_to_idx(
         output_dir=Path("data/my_dataset"),
@@ -192,6 +192,8 @@ async def output_to_idx(
 )
 ```
 
+Runs a threaded pipeline for reading batches, embedding, and writing outputs to keep the GPU busy while SQLite and IO work runs in parallel.
+
 Creates:
 - `output_dir/documents.db`: SQLite database with full documents
 - `output_dir/embeds.bin`: DiskANN binary format embeddings
@@ -215,8 +217,10 @@ Builds DiskANN index from binary file.
 class OutputConfig:
     sqlite_compression: bool = True
     compression_level: int = 5
-    batch_size: int = 1000
+    batch_size: int = 50
     sqlite_cache_size_mb: int = 2000
+    prefetch_batches: int = 100
+    sqlite_commit_every: int = 100
 ```
 
 #### `DiskANNConfig`

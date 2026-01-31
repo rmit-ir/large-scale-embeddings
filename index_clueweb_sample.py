@@ -16,7 +16,6 @@ import json
 import os
 from pathlib import Path
 from typing import AsyncIterator
-from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
@@ -30,6 +29,12 @@ from asedisks.dataset_tools import (
 )
 from asedisks.search import search
 from asedisks.logging_utils import get_logger
+from asedisks.utils import (
+    truncate_first_n_words,
+    MultiGPUEmbedder,
+    EmbedderProtocol,
+    resolve_embed_gpus,
+)
 
 logger = get_logger(__name__)
 
@@ -57,64 +62,6 @@ MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "openbmb/MiniCPM-Embedding-Light"
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
 MAX_WORDS = int(os.environ.get("MAX_WORDS", "1024"))
 EMBED_GPUS = os.environ.get("EMBED_GPUS", "auto")
-
-
-# ============================================================================
-# ClueWeb22 Document Reader
-# ============================================================================
-
-
-class ClueWeb22Reader:
-    """Read documents from ClueWeb22-B format."""
-
-    def __init__(self, root_path: Path):
-        self.root_path = root_path
-
-    def iter_documents(self):
-        """
-        Iterate over all documents in the dataset.
-
-        Yields:
-            Tuple of (fake_id, doc_data) where doc_data is parsed JSON
-        """
-        json_files = sorted(self.root_path.rglob("*.json.gz"))
-        try:
-            from tqdm import tqdm  # type: ignore
-
-            file_iter = tqdm(
-                json_files,
-                unit=" file",
-                desc="Files",
-                leave=True,
-                position=0,
-                dynamic_ncols=True,
-            )
-        except Exception:
-            file_iter = json_files
-
-        for json_gz in file_iter:
-            shard_name = json_gz.stem.replace(".json", "")
-
-            with open(json_gz, "rb") as f_json:
-                decompressed = gzip.decompress(f_json.read()).decode(
-                    "utf-8",
-                    errors="ignore",
-                )
-
-            for line_idx, line in enumerate(decompressed.splitlines()):
-                if not line.strip():
-                    continue
-
-                try:
-                    doc_data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                fake_id = f"clueweb22-{shard_name}-{line_idx:05d}"
-                yield fake_id, doc_data
-
-        if hasattr(file_iter, "close"):
-            file_iter.close()
 
 
 # ============================================================================
@@ -198,104 +145,22 @@ class MiniCPMEmbedder:
         return self._to_numpy(embeddings)
 
 
-def _resolve_embed_gpus(value: str) -> list[int]:
-    normalized = value.strip().lower()
-    if normalized in ("", "auto", "all"):
-        if torch.cuda.is_available():
-            return list(range(torch.cuda.device_count()))
-        return []
-    if normalized in ("cpu", "none", "off"):
-        return []
-
-    ids: list[int] = []
-    for part in value.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        ids.append(int(part))
-
-    if not torch.cuda.is_available():
-        logger.warning("EMBED_GPUS=%s but CUDA is unavailable. Falling back to CPU.", value)
-        return []
-
-    max_id = torch.cuda.device_count() - 1
-    invalid = [gpu_id for gpu_id in ids if gpu_id < 0 or gpu_id > max_id]
-    if invalid:
-        raise ValueError(
-            f"EMBED_GPUS includes invalid CUDA device ids {invalid}. "
-            f"Available range: 0..{max_id}"
-        )
-    return ids
-
-
-def _split_even(items: list[str], parts: int) -> list[list[str]]:
-    if parts <= 0:
-        return [items]
-    total = len(items)
-    if total == 0:
-        return []
-    base = total // parts
-    remainder = total % parts
-    chunks: list[list[str]] = []
-    start = 0
-    for idx in range(parts):
-        size = base + (1 if idx < remainder else 0)
-        if size == 0:
-            continue
-        end = start + size
-        chunks.append(items[start:end])
-        start = end
-    return chunks
-
-
-class MultiGPUEmbedder:
-    """Run embedding across multiple GPUs in parallel (one model per GPU)."""
-
-    def __init__(self, model_name: str, device_ids: list[int]):
-        if not device_ids:
-            raise ValueError("MultiGPUEmbedder requires at least one device id.")
-        self.device_ids = device_ids
-        self.embedders = [
-            MiniCPMEmbedder(model_name=model_name, device=f"cuda:{device_id}")
-            for device_id in device_ids
-        ]
-        self.pool = ThreadPoolExecutor(max_workers=len(self.embedders))
-        logger.info("Multi-GPU embedder initialized on devices: %s", self.device_ids)
-
-    def _encode_chunks(self, texts: list[str], encoder_name: str) -> np.ndarray:
-        if not texts:
-            return np.zeros((0, 0), dtype=np.float32)
-
-        chunks = _split_even(texts, len(self.embedders))
-        if not chunks:
-            return np.zeros((0, 0), dtype=np.float32)
-
-        futures = []
-        for embedder, chunk in zip(self.embedders, chunks):
-            encoder = getattr(embedder, encoder_name)
-            futures.append(self.pool.submit(encoder, chunk))
-
-        results = [future.result() for future in futures]
-        return np.vstack(results)
-
-    def encode_passages(self, texts: list[str]) -> np.ndarray:
-        return self._encode_chunks(texts, "encode_passages")
-
-    def encode_queries(self, texts: list[str]) -> np.ndarray:
-        return self._encode_chunks(texts, "encode_queries")
-
-
 # Global embedder instance (loaded once)
-_embedder: MiniCPMEmbedder | MultiGPUEmbedder | None = None
+_embedder: EmbedderProtocol | None = None
 
 
-def get_embedder() -> MiniCPMEmbedder | MultiGPUEmbedder:
+def get_embedder() -> EmbedderProtocol:
     """Get or create embedder instance."""
     global _embedder
     if _embedder is None:
-        gpu_ids = _resolve_embed_gpus(EMBED_GPUS)
+        gpu_ids = resolve_embed_gpus(EMBED_GPUS, logger=logger)
         if len(gpu_ids) > 1:
-            _embedder = MultiGPUEmbedder(model_name=MODEL_NAME, device_ids=gpu_ids)
+            _embedder = MultiGPUEmbedder(
+                device_ids=gpu_ids,
+                embedder_factory=lambda device_id: MiniCPMEmbedder(
+                    model_name=MODEL_NAME, device=f"cuda:{device_id}"
+                ),
+            )
         elif len(gpu_ids) == 1:
             _embedder = MiniCPMEmbedder(device=f"cuda:{gpu_ids[0]}")
         else:
@@ -308,20 +173,6 @@ def get_embedder() -> MiniCPMEmbedder | MultiGPUEmbedder:
 # ============================================================================
 
 
-def _truncate_first_n_words(text: str, max_words: int) -> str:
-    if not text:
-        return text
-    if max_words <= 0:
-        return text
-    count = 0
-    for idx, ch in enumerate(text):
-        if ch == " ":
-            count += 1
-            if count == max_words - 1:
-                return text[:idx]
-    return text
-
-
 async def clueweb_records(batch_size: int = BATCH_SIZE) -> AsyncIterator[list[DataRecord]]:
     """
     Async generator yielding batches of DataRecord from ClueWeb22-B sample.
@@ -329,35 +180,70 @@ async def clueweb_records(batch_size: int = BATCH_SIZE) -> AsyncIterator[list[Da
     Yields:
         Batches of DataRecord objects
     """
-    reader = ClueWeb22Reader(CLUEWEB_ROOT)
     batch: list[DataRecord] = []
 
-    for fake_id, doc_data in reader.iter_documents():
-        clean_text = doc_data.get("Clean-Text", "")
-        clueweb_id = doc_data.get("ClueWeb22-ID", fake_id)
+    json_files = sorted(CLUEWEB_ROOT.rglob("*.json.gz"))
+    try:
+        from tqdm import tqdm  # type: ignore
 
-        if not clean_text.strip():
-            continue
-
-        content = _truncate_first_n_words(clean_text, MAX_WORDS)
-
-        batch.append(
-            DataRecord(
-            id=clueweb_id,
-            content=content,
-            metadata={
-                "id": clueweb_id,
-                "raw": doc_data,
-            },
-            )
+        file_iter = tqdm(
+            json_files,
+            unit=" file",
+            desc="Files",
+            leave=True,
+            position=0,
+            dynamic_ncols=True,
         )
+    except Exception:
+        file_iter = json_files
 
-        if len(batch) >= batch_size:
-            yield batch
-            batch = []
+    for json_gz in file_iter:
+        shard_name = json_gz.stem.replace(".json", "")
+
+        with open(json_gz, "rb") as f_json:
+            decompressed = gzip.decompress(f_json.read()).decode(
+                "utf-8",
+                errors="ignore",
+            )
+
+        for line_idx, line in enumerate(decompressed.splitlines()):
+            if not line.strip():
+                continue
+
+            try:
+                doc_data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            fake_id = f"clueweb22-{shard_name}-{line_idx:05d}"
+            clean_text = doc_data.get("Clean-Text", "")
+            clueweb_id = doc_data.get("ClueWeb22-ID", fake_id)
+
+            if not clean_text.strip():
+                continue
+
+            content = truncate_first_n_words(clean_text, MAX_WORDS)
+
+            batch.append(
+                DataRecord(
+                    id=clueweb_id,
+                    content=content,
+                    metadata={
+                        "id": clueweb_id,
+                        "raw": doc_data,
+                    },
+                )
+            )
+
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
 
     if batch:
         yield batch
+
+    if hasattr(file_iter, "close"):
+        file_iter.close()
 
 
 # ============================================================================
@@ -408,7 +294,6 @@ async def run_indexing():
         config=OutputConfig(
             batch_size=BATCH_SIZE,
             sqlite_compression=False,  # Keep it simple for testing
-            threaded=True,
         ),
     )
 
