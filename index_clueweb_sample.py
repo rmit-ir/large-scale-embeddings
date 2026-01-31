@@ -56,7 +56,6 @@ OUTPUT_DIR = Path(
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "openbmb/MiniCPM-Embedding-Light")
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
 MAX_WORDS = int(os.environ.get("MAX_WORDS", "1024"))
-USE_FLASH_ATTN = os.environ.get("USE_FLASH_ATTN", "0") == "1"
 EMBED_GPUS = os.environ.get("EMBED_GPUS", "auto")
 
 
@@ -152,8 +151,6 @@ class MiniCPMEmbedder:
             "trust_remote_code": True,
             "torch_dtype": self.dtype,
         }
-        if USE_FLASH_ATTN and self.device.startswith("cuda"):
-            model_kwargs["attn_implementation"] = "flash_attention_2"
 
         logger.info("Loading %s on %s...", model_name, self.device)
         self.model = AutoModel.from_pretrained(model_name, **model_kwargs).to(self.device)
@@ -411,6 +408,7 @@ async def run_indexing():
         config=OutputConfig(
             batch_size=BATCH_SIZE,
             sqlite_compression=False,  # Keep it simple for testing
+            threaded=True,
         ),
     )
 

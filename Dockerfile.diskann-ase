@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3 -m pip install --no-cache-dir --upgrade pip \
   && python3 -m pip install --no-cache-dir \
     numpy \
-    "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu \
+    "torch==2.10.0+cu130" --index-url https://download.pytorch.org/whl/cu130 \
   && python3 -m pip install --no-cache-dir \
     "transformers==4.37.2" \
     sentencepiece \
@@ -22,5 +22,7 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip \
 COPY cloud/dockerfiles/torch-cuda-entrypoint.sh /usr/local/bin/torch-cuda-entrypoint.sh
 RUN chmod 755 /usr/local/bin/torch-cuda-entrypoint.sh
 
+# check and fix torch<>cuda compatibility
+# check and install necessary NVCC toolkits (download 3GB)
 ENTRYPOINT ["/usr/local/bin/torch-cuda-entrypoint.sh"]
 WORKDIR /app/large-scale-embeddings

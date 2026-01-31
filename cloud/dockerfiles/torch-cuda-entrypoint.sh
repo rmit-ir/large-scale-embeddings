@@ -30,10 +30,6 @@ PY
     ver="$(sed -n 's/.*CUDA Version *//p' /usr/local/cuda/version.txt | awk '{print $1}' | head -n1)"
   fi
 
-  if [ -z "${ver}" ] && command -v nvcc >/dev/null 2>&1; then
-    ver="$(nvcc --version 2>/dev/null | sed -n 's/.*release \([0-9]\+\.[0-9]\+\).*/\1/p' | head -n1)"
-  fi
-
   printf '%s' "${ver}"
 }
 
