@@ -6,7 +6,7 @@ A flexible framework for processing datasets and building search indexes with cu
 
 ASEDISKS provides tools to:
 
-- Process any dataset format through customizable async generators
+- Process any dataset format through customizable async batch generators
 - Embed documents using any embedding service (API, local model, etc.)
 - Build search-ready indexes (SQLite + DiskANN)
 - Perform offline search
@@ -22,7 +22,7 @@ ASEDISKS provides tools to:
 ### Workflow
 
 ```
-Your Data → Async Generator → output_to_idx(records, embed_fn)
+Your Data → Async Batch Generator → output_to_idx(records, embed_fn)
                                      ↓
                            Search-Ready Files:
                              - documents.db (SQLite)
@@ -49,15 +49,23 @@ from pathlib import Path
 import numpy as np
 from dataset_tools import output_to_idx, build_index, DataRecord, OutputConfig
 
-# Step 1: Define async data generator
-async def my_data_generator():
-    """Yield DataRecord objects from your data source."""
+# Step 1: Define async batch data generator
+async def my_data_generator(batch_size: int = 100):
+    """Yield batches of DataRecord objects from your data source."""
+    batch = []
     for item in my_data:  # Your data source
-        yield DataRecord(
-            id=item["id"],
-            content=f"{item['title']}\n{item['text']}",  # You format content
-            metadata=item,  # Full document for storage
+        batch.append(
+            DataRecord(
+                id=item["id"],
+                content=f"{item['title']}\n{item['text']}",  # You format content
+                metadata=item,  # Full document for storage
+            )
         )
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 # Step 2: Define async batch embed function
 async def my_batch_embed(texts: list[str]) -> np.ndarray:
@@ -70,7 +78,7 @@ async def my_batch_embed(texts: list[str]) -> np.ndarray:
 async def main():
     await output_to_idx(
         output_dir=Path("data/my_dataset"),
-        records=my_data_generator(),
+        records=my_data_generator(batch_size=100),
         embed_fn=my_batch_embed,
         config=OutputConfig(batch_size=100),
     )
@@ -178,7 +186,7 @@ class DataRecord(TypedDict):
 ```python
 async def output_to_idx(
     output_dir: Path,
-    records: AsyncIterator[DataRecord] | Iterator[DataRecord],
+    records: AsyncIterator[list[DataRecord]] | Iterator[list[DataRecord]],
     embed_fn: Callable[[list[str]], Awaitable[np.ndarray]],
     config: Optional[OutputConfig] = None,
 )

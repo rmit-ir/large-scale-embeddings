@@ -325,14 +325,15 @@ def _truncate_first_n_words(text: str, max_words: int) -> str:
     return text
 
 
-async def clueweb_records() -> AsyncIterator[DataRecord]:
+async def clueweb_records(batch_size: int = BATCH_SIZE) -> AsyncIterator[list[DataRecord]]:
     """
-    Async generator yielding DataRecord from ClueWeb22-B sample.
+    Async generator yielding batches of DataRecord from ClueWeb22-B sample.
 
     Yields:
-        DataRecord objects
+        Batches of DataRecord objects
     """
     reader = ClueWeb22Reader(CLUEWEB_ROOT)
+    batch: list[DataRecord] = []
 
     for fake_id, doc_data in reader.iter_documents():
         clean_text = doc_data.get("Clean-Text", "")
@@ -343,14 +344,23 @@ async def clueweb_records() -> AsyncIterator[DataRecord]:
 
         content = _truncate_first_n_words(clean_text, MAX_WORDS)
 
-        yield DataRecord(
+        batch.append(
+            DataRecord(
             id=clueweb_id,
             content=content,
             metadata={
                 "id": clueweb_id,
                 "raw": doc_data,
             },
+            )
         )
+
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+
+    if batch:
+        yield batch
 
 
 # ============================================================================
@@ -396,7 +406,7 @@ async def run_indexing():
     logger.info("Starting indexing...")
     await output_to_idx(
         output_dir=OUTPUT_DIR,
-        records=clueweb_records(),
+        records=clueweb_records(BATCH_SIZE),
         embed_fn=embed_batch,
         config=OutputConfig(
             batch_size=BATCH_SIZE,

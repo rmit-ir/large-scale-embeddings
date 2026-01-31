@@ -33,7 +33,7 @@ class OutputConfig:
 
 async def output_to_idx(
     output_dir: Path,
-    records: Union[AsyncIterator[DataRecord], Iterator[DataRecord]],
+    records: Union[AsyncIterator[list[DataRecord]], Iterator[list[DataRecord]]],
     embed_fn: Callable[[list[str]], Awaitable[np.ndarray]],
     config: Optional[OutputConfig] = None,
 ):
@@ -49,7 +49,7 @@ async def output_to_idx(
 
     Args:
         output_dir: Directory to write output files
-        records: Async or sync iterator of DataRecord objects
+        records: Async or sync iterator of DataRecord batches
         embed_fn: Async function that embeds a batch of texts.
                   Signature: async def embed_fn(texts: list[str]) -> np.ndarray, shape (len(texts), 1024)
         config: Output configuration options
@@ -114,30 +114,17 @@ async def output_to_idx(
         embeds_file.write(np.uint32(0).tobytes())  # num_vectors placeholder
         embeds_file.write(np.uint32(0).tobytes())  # dimensions placeholder
 
-        batch: list[DataRecord] = []
-
-        async for record in _ensure_async(records):
-            batch.append(record)
-
-            if len(batch) >= config.batch_size:
-                embedding_dim = await _process_batch(
-                    batch, embed_fn, embeds_file, conn, doc_ids, embedding_dim
-                )
-                num_records += len(batch)
-                if pbar is not None:
-                    pbar.update(len(batch))
-                else:
-                    logger.info("Processed %s records...", f"{num_records:,}")
-                batch = []
-
-        # Process remaining records
-        if batch:
+        async for batch in _ensure_async(records):
+            if not batch:
+                continue
             embedding_dim = await _process_batch(
                 batch, embed_fn, embeds_file, conn, doc_ids, embedding_dim
             )
             num_records += len(batch)
             if pbar is not None:
                 pbar.update(len(batch))
+            else:
+                logger.info("Processed %s records...", f"{num_records:,}")
 
         # Update header with actual counts
         embeds_file.seek(0)
@@ -223,8 +210,8 @@ async def _process_batch(
 
 
 async def _ensure_async(
-    iterable: Union[AsyncIterator[DataRecord], Iterator[DataRecord]]
-) -> AsyncIterator[DataRecord]:
+    iterable: Union[AsyncIterator[list[DataRecord]], Iterator[list[DataRecord]]]
+) -> AsyncIterator[list[DataRecord]]:
     """
     Convert sync iterator to async if needed.
 
