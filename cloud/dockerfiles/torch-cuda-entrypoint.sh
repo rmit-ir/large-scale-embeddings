@@ -62,15 +62,13 @@ if spec is None:
 
 import torch
 
-print(torch.__version__)
 print(torch.version.cuda or "")
 PY
 )" || true
 
-torch_ver="$(printf '%s\n' "${torch_info}" | sed -n '1p')"
-torch_cuda="$(printf '%s\n' "${torch_info}" | sed -n '2p')"
+torch_cuda="$(printf '%s\n' "${torch_info}" | sed -n '1p')"
 
-if [ "${torch_ver}" = "NOT_INSTALLED" ] || [ -z "${torch_ver}" ]; then
+if [ "${torch_info}" = "NOT_INSTALLED" ] || [ -z "${torch_info}" ]; then
   log "Torch not installed; installing for CUDA ${cuda_ver} (cu${cu_tag})."
   if ! python3 -m pip install --no-cache-dir --index-url "https://download.pytorch.org/whl/cu${cu_tag}" torch; then
     log "Torch install failed for cu${cu_tag}; continuing without changes."
@@ -78,12 +76,11 @@ if [ "${torch_ver}" = "NOT_INSTALLED" ] || [ -z "${torch_ver}" ]; then
   exec "$@"
 fi
 
-torch_base="${torch_ver%%+*}"
 if [ "${torch_cuda}" = "${cuda_ver}" ]; then
   log "Torch CUDA ${torch_cuda} matches detected CUDA ${cuda_ver}."
 else
-  log "Torch CUDA ${torch_cuda:-none} does not match detected CUDA ${cuda_ver}; reinstalling torch ${torch_base}+cu${cu_tag}."
-  if ! python3 -m pip install --no-cache-dir --index-url "https://download.pytorch.org/whl/cu${cu_tag}" "torch==${torch_base}+cu${cu_tag}"; then
+  log "Torch CUDA ${torch_cuda:-none} does not match detected CUDA ${cuda_ver}; reinstalling latest torch for cu${cu_tag}."
+  if ! python3 -m pip install --no-cache-dir --index-url "https://download.pytorch.org/whl/cu${cu_tag}" torch; then
     log "Torch reinstall failed for cu${cu_tag}; keeping existing torch."
   fi
 fi
