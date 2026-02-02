@@ -9,7 +9,8 @@ dependencies:
   - faiss-gpu=1.13.0
   - mkl
   - pip:
-      - diskannpy==0.7.0
+      # diskannpy will be installed through build and pip install -e
+      # - diskannpy==0.7.0
       - accelerate==0.34.2
       - aiohappyeyeballs==2.4.6
       - aiohttp==3.11.12
