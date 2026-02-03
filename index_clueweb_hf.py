@@ -72,7 +72,7 @@ OUTPUT_DIR = Path(
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 MODEL_BATCH_SIZE = int(os.environ.get("MODEL_BATCH_SIZE", "32"))
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
-MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "0"))
+MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "1024"))
 EMBED_GPUS = os.environ.get("EMBED_GPUS", "auto")
 
 QUERY_PROMPT_NAME = os.environ.get("QUERY_PROMPT_NAME", "query")
