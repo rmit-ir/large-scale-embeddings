@@ -15,7 +15,7 @@ docker run --rm --gpus all \
     -e EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B \
     -e QUERY_PROMPT_NAME=query \
     -e BATCH_SIZE=8 \
-    -e MAX_WORDS=1024 \
+    -e MAX_TOKENS=512 \
     docker.io/rankun203/diskann-ase:latest \
     bash -lc "python3 index_clueweb_hf.py all" \
     | tee worklogs/clueweb22_hf_qwen3_0.6.log
@@ -72,7 +72,7 @@ OUTPUT_DIR = Path(
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 MODEL_BATCH_SIZE = int(os.environ.get("MODEL_BATCH_SIZE", "32"))
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
-MAX_WORDS = int(os.environ.get("MAX_WORDS", "1024"))
+MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "0"))
 EMBED_GPUS = os.environ.get("EMBED_GPUS", "auto")
 
 QUERY_PROMPT_NAME = os.environ.get("QUERY_PROMPT_NAME", "query")
@@ -140,6 +140,16 @@ class SentenceTransformerEmbedder:
         logger.info("Loading %s on %s...", model_name, self.device)
         self.model = SentenceTransformer(model_name, **st_kwargs)
         self.model.eval()
+        if MAX_TOKENS > 0:
+            try:
+                self.model.max_seq_length = MAX_TOKENS
+            except Exception:
+                try:
+                    self.model[0].max_seq_length = MAX_TOKENS
+                except Exception:
+                    logger.warning("Failed to set max_seq_length=%s on model.", MAX_TOKENS)
+            else:
+                logger.info("Set max_seq_length=%s", MAX_TOKENS)
         logger.info("Model loaded.")
 
     def _encode(self, texts: list[str], is_query: bool) -> np.ndarray:
@@ -253,7 +263,10 @@ async def clueweb_records(batch_size: int = BATCH_SIZE) -> AsyncIterator[list[Da
                 if not clean_text.strip():
                     continue
 
-                content = truncate_first_n_words(clean_text, MAX_WORDS)
+                if MAX_TOKENS > 0:
+                    content = truncate_first_n_words(clean_text, MAX_TOKENS)
+                else:
+                    content = clean_text
 
                 batch.append(
                     DataRecord(

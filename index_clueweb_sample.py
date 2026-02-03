@@ -12,7 +12,7 @@ docker run --rm --gpus all \
     -w /app/large-scale-embeddings \
     -e CLUEWEB_ROOT=/app/large-scale-embeddings/data/datasets/clueweb22-b \
     -e BATCH_SIZE=8 \
-    -e MAX_WORDS=1024 \
+    -e MAX_TOKENS=512 \
     docker.io/rankun203/diskann-ase:latest \
     bash -lc "python3 index_clueweb_sample.py all" \
     | tee worklogs/clueweb22_full.4gpu.log
@@ -22,6 +22,7 @@ import asyncio
 import gzip
 import json
 import os
+import inspect
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -69,7 +70,7 @@ OUTPUT_DIR = Path(
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "openbmb/MiniCPM-Embedding-Light")
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
 MODEL_BATCH_SIZE = int(os.environ.get("MODEL_BATCH_SIZE", '32'))
-MAX_WORDS = int(os.environ.get("MAX_WORDS", "1024"))
+MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "0"))
 EMBED_GPUS = os.environ.get("EMBED_GPUS", "auto")
 
 
@@ -119,6 +120,23 @@ class MiniCPMEmbedder:
             embeddings = embeddings.detach().cpu().numpy()
         return np.asarray(embeddings, dtype=np.float32)
 
+    def _encode_kwargs(self, fn) -> dict:
+        kwargs = {
+            "batch_size": MODEL_BATCH_SIZE,
+            "return_sparse_vectors": False,
+            "show_progress_bar": False,
+        }
+        if MAX_TOKENS > 0:
+            try:
+                params = inspect.signature(fn).parameters
+            except (TypeError, ValueError):
+                params = {}
+            for key in ("max_length", "max_seq_length", "max_tokens"):
+                if key in params:
+                    kwargs[key] = MAX_TOKENS
+                    break
+        return kwargs
+
     @torch.inference_mode()
     def encode_passages(self, texts: list[str]) -> np.ndarray:
         """
@@ -129,12 +147,7 @@ class MiniCPMEmbedder:
         """
         if not hasattr(self.model, "encode_corpus"):
             raise RuntimeError("Model does not implement encode_corpus().")
-        embeddings, _ = self.model.encode_corpus(
-            texts,
-            batch_size=MODEL_BATCH_SIZE,
-            return_sparse_vectors=False,
-            show_progress_bar=False,
-        )
+        embeddings, _ = self.model.encode_corpus(texts, **self._encode_kwargs(self.model.encode_corpus))
         return self._to_numpy(embeddings)
 
     @torch.inference_mode()
@@ -147,12 +160,7 @@ class MiniCPMEmbedder:
         """
         if not hasattr(self.model, "encode_query"):
             raise RuntimeError("Model does not implement encode_query().")
-        embeddings, _ = self.model.encode_query(
-            texts,
-            batch_size=MODEL_BATCH_SIZE,
-            return_sparse_vectors=False,
-            show_progress_bar=False,
-        )
+        embeddings, _ = self.model.encode_query(texts, **self._encode_kwargs(self.model.encode_query))
         return self._to_numpy(embeddings)
 
 
@@ -228,7 +236,10 @@ async def clueweb_records(batch_size: int = BATCH_SIZE) -> AsyncIterator[list[Da
                 if not clean_text.strip():
                     continue
 
-                content = truncate_first_n_words(clean_text, MAX_WORDS)
+                if MAX_TOKENS > 0:
+                    content = truncate_first_n_words(clean_text, MAX_TOKENS)
+                else:
+                    content = clean_text
 
                 batch.append(
                     DataRecord(
