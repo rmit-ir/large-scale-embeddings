@@ -219,9 +219,10 @@ class OutputConfig:
     compression_level: int = 5
     batch_size: int = 50
     sqlite_cache_size_mb: int = 2000
-    prefetch_batches: int = 100
-    sqlite_commit_every: int = 100
+    prefetch_batches: Optional[int] = None  # defaults to batch_size * num_gpus * 100
+    sqlite_commit_every: Optional[int] = None  # defaults to batch_size * num_gpus * 100
 ```
+Defaults for `prefetch_batches` and `sqlite_commit_every` are computed at runtime as `batch_size * num_gpus * 100`, where `num_gpus` is inferred from `EMBED_GPUS` or `CUDA_VISIBLE_DEVICES`.
 
 #### `DiskANNConfig`
 ```python

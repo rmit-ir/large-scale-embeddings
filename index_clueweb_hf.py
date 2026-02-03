@@ -1,21 +1,24 @@
 """
-Index ClueWeb22-B sample dataset using ASEANN.
+Index ClueWeb22-B sample dataset using Hugging Face embedding models (SentenceTransformer).
 
-This script:
-1. Reads documents from ClueWeb22-B sample data
-2. Embeds them using MiniCPM-Embedding-Light locally (Transformers)
-3. Builds a DiskANN index
-4. Runs test searches
+Default model: Qwen/Qwen3-Embedding-0.6B
 
+Notes for Qwen/Qwen3-Embedding-0.6B:
+  - SentenceTransformer usage with prompt_name="query" for query embeddings.
+  - Recommended (optional) flash_attention_2 with left padding.
+
+Example:
 docker run --rm --gpus all \
     -v /home/ubuntu/projects/large-scale-embeddings:/app/large-scale-embeddings \
     -w /app/large-scale-embeddings \
     -e CLUEWEB_ROOT=/app/large-scale-embeddings/data/datasets/clueweb22-b \
+    -e EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B \
+    -e QUERY_PROMPT_NAME=query \
     -e BATCH_SIZE=8 \
     -e MAX_WORDS=1024 \
     docker.io/rankun203/diskann-ase:latest \
-    bash -lc "python3 index_clueweb_sample.py all" \
-    | tee worklogs/clueweb22_full.4gpu.log
+    bash -lc "python3 index_clueweb_hf.py all" \
+    | tee worklogs/clueweb22_hf_qwen3_0.6.log
 """
 
 import asyncio
@@ -62,15 +65,29 @@ CLUEWEB_ROOT = Path(
 OUTPUT_DIR = Path(
     os.environ.get(
         "CLUEWEB_OUTPUT_DIR",
-        str(REPO_ROOT / "data/aseann_test/clueweb22-sample"),
+        str(REPO_ROOT / "data/aseann_test/clueweb22-sample-hf"),
     )
 )
 
-MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "openbmb/MiniCPM-Embedding-Light")
+MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+MODEL_BATCH_SIZE = int(os.environ.get("MODEL_BATCH_SIZE", "32"))
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
-MODEL_BATCH_SIZE = int(os.environ.get("MODEL_BATCH_SIZE", '32'))
 MAX_WORDS = int(os.environ.get("MAX_WORDS", "1024"))
 EMBED_GPUS = os.environ.get("EMBED_GPUS", "auto")
+
+QUERY_PROMPT_NAME = os.environ.get("QUERY_PROMPT_NAME", "query")
+QUERY_PROMPT = os.environ.get("QUERY_PROMPT", "")
+USE_FLASH_ATTENTION = os.environ.get("USE_FLASH_ATTENTION", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+TOKENIZER_PADDING_SIDE = os.environ.get("TOKENIZER_PADDING_SIDE", "").strip()
+TRUST_REMOTE_CODE = os.environ.get("TRUST_REMOTE_CODE", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
 
 
 # ============================================================================
@@ -78,15 +95,13 @@ EMBED_GPUS = os.environ.get("EMBED_GPUS", "auto")
 # ============================================================================
 
 
-class MiniCPMEmbedder:
+class SentenceTransformerEmbedder:
     """
-    MiniCPM-Embedding-Light model for local embedding.
-
-    Uses transformers with the model's encode_query/encode_corpus helpers.
+    SentenceTransformer-based embedder for Hugging Face models.
     """
 
     def __init__(self, model_name: str = MODEL_NAME, device: str = "auto"):
-        from transformers import AutoModel
+        from sentence_transformers import SentenceTransformer
 
         if device == "auto":
             if torch.cuda.is_available():
@@ -103,57 +118,66 @@ class MiniCPMEmbedder:
         else:
             self.dtype = torch.float32
 
-        model_kwargs = {
-            "trust_remote_code": True,
-            "torch_dtype": self.dtype,
+        model_kwargs = {"torch_dtype": self.dtype}
+        tokenizer_kwargs: dict[str, str] = {}
+
+        if USE_FLASH_ATTENTION and self.device.startswith("cuda"):
+            model_kwargs["attn_implementation"] = "flash_attention_2"
+            if not TOKENIZER_PADDING_SIDE:
+                tokenizer_kwargs["padding_side"] = "left"
+
+        if TOKENIZER_PADDING_SIDE:
+            tokenizer_kwargs["padding_side"] = TOKENIZER_PADDING_SIDE
+
+        st_kwargs = {
+            "device": self.device,
+            "trust_remote_code": TRUST_REMOTE_CODE,
+            "model_kwargs": model_kwargs,
         }
+        if tokenizer_kwargs:
+            st_kwargs["tokenizer_kwargs"] = tokenizer_kwargs
 
         logger.info("Loading %s on %s...", model_name, self.device)
-        self.model = AutoModel.from_pretrained(model_name, **model_kwargs).to(self.device)
+        self.model = SentenceTransformer(model_name, **st_kwargs)
         self.model.eval()
-
         logger.info("Model loaded.")
 
-    def _to_numpy(self, embeddings) -> np.ndarray:
-        if isinstance(embeddings, torch.Tensor):
-            embeddings = embeddings.detach().cpu().numpy()
+    def _encode(self, texts: list[str], is_query: bool) -> np.ndarray:
+        if not texts:
+            return np.zeros((0, 0), dtype=np.float32)
+
+        encode_kwargs = {
+            "batch_size": MODEL_BATCH_SIZE,
+            "convert_to_numpy": True,
+            "show_progress_bar": False,
+        }
+
+        if is_query:
+            prompt_text = QUERY_PROMPT.strip()
+            prompt_name = QUERY_PROMPT_NAME.strip()
+            if prompt_text:
+                encode_kwargs["prompt"] = prompt_text
+            elif prompt_name:
+                prompts = getattr(self.model, "prompts", None)
+                if isinstance(prompts, dict) and prompt_name in prompts:
+                    encode_kwargs["prompt_name"] = prompt_name
+                else:
+                    available = list(prompts.keys()) if isinstance(prompts, dict) else "n/a"
+                    logger.warning(
+                        "QUERY_PROMPT_NAME=%s not found in model.prompts (available=%s). "
+                        "Encoding queries without a prompt.",
+                        prompt_name,
+                        available,
+                    )
+
+        embeddings = self.model.encode(texts, **encode_kwargs)
         return np.asarray(embeddings, dtype=np.float32)
 
-    @torch.inference_mode()
     def encode_passages(self, texts: list[str]) -> np.ndarray:
-        """
-        Encode passages/documents.
+        return self._encode(texts, is_query=False)
 
-        Returns:
-            numpy array of shape (len(texts), 1024)
-        """
-        if not hasattr(self.model, "encode_corpus"):
-            raise RuntimeError("Model does not implement encode_corpus().")
-        embeddings, _ = self.model.encode_corpus(
-            texts,
-            batch_size=MODEL_BATCH_SIZE,
-            return_sparse_vectors=False,
-            show_progress_bar=False,
-        )
-        return self._to_numpy(embeddings)
-
-    @torch.inference_mode()
     def encode_queries(self, texts: list[str]) -> np.ndarray:
-        """
-        Encode queries.
-
-        Returns:
-            numpy array of shape (len(texts), 1024)
-        """
-        if not hasattr(self.model, "encode_query"):
-            raise RuntimeError("Model does not implement encode_query().")
-        embeddings, _ = self.model.encode_query(
-            texts,
-            batch_size=MODEL_BATCH_SIZE,
-            return_sparse_vectors=False,
-            show_progress_bar=False,
-        )
-        return self._to_numpy(embeddings)
+        return self._encode(texts, is_query=True)
 
 
 # Global embedder instance (loaded once)
@@ -168,14 +192,18 @@ def get_embedder() -> EmbedderProtocol:
         if len(gpu_ids) > 1:
             _embedder = MultiGPUEmbedder(
                 device_ids=gpu_ids,
-                embedder_factory=lambda device_id: MiniCPMEmbedder(
-                    model_name=MODEL_NAME, device=f"cuda:{device_id}"
+                embedder_factory=lambda device_id: SentenceTransformerEmbedder(
+                    model_name=MODEL_NAME,
+                    device=f"cuda:{device_id}",
                 ),
             )
         elif len(gpu_ids) == 1:
-            _embedder = MiniCPMEmbedder(device=f"cuda:{gpu_ids[0]}")
+            _embedder = SentenceTransformerEmbedder(
+                model_name=MODEL_NAME,
+                device=f"cuda:{gpu_ids[0]}",
+            )
         else:
-            _embedder = MiniCPMEmbedder()
+            _embedder = SentenceTransformerEmbedder(model_name=MODEL_NAME)
     return _embedder
 
 
@@ -187,9 +215,6 @@ def get_embedder() -> EmbedderProtocol:
 async def clueweb_records(batch_size: int = BATCH_SIZE) -> AsyncIterator[list[DataRecord]]:
     """
     Async generator yielding batches of DataRecord from ClueWeb22-B sample.
-
-    Yields:
-        Batches of DataRecord objects
     """
     batch: list[DataRecord] = []
 
@@ -249,7 +274,7 @@ async def clueweb_records(batch_size: int = BATCH_SIZE) -> AsyncIterator[list[Da
         yield batch
 
     if hasattr(file_iter, "close"):
-        file_iter.close() # type: ignore
+        file_iter.close()  # type: ignore
 
 
 # ============================================================================
@@ -258,13 +283,13 @@ async def clueweb_records(batch_size: int = BATCH_SIZE) -> AsyncIterator[list[Da
 
 
 async def embed_batch(texts: list[str]) -> np.ndarray:
-    """Embed a batch of texts using MiniCPM-Embedding-Light."""
+    """Embed a batch of texts using SentenceTransformer."""
     embedder = get_embedder()
     return embedder.encode_passages(texts)
 
 
 async def embed_queries_batch(texts: list[str]) -> np.ndarray:
-    """Embed a batch of queries using MiniCPM-Embedding-Light."""
+    """Embed a batch of queries using SentenceTransformer."""
     embedder = get_embedder()
     return embedder.encode_queries(texts)
 
@@ -277,11 +302,12 @@ async def embed_queries_batch(texts: list[str]) -> np.ndarray:
 async def run_indexing():
     """Run the indexing pipeline."""
     logger.info("=" * 60)
-    logger.info("ASEANN - ClueWeb22-B Sample Indexing")
+    logger.info("ASEANN - ClueWeb22-B Sample Indexing (HF SentenceTransformer)")
     logger.info("=" * 60)
     logger.info("Source: %s", CLUEWEB_ROOT)
     logger.info("Output: %s", OUTPUT_DIR)
-    logger.info("Max docs: ALL")
+    logger.info("Embedding model: %s", MODEL_NAME)
+    logger.info("Query prompt name: %s", QUERY_PROMPT_NAME or "(none)")
     logger.info("Batch size: %s", BATCH_SIZE)
     logger.info("")
 
@@ -299,7 +325,7 @@ async def run_indexing():
         embed_fn=embed_batch,
         config=OutputConfig(
             batch_size=BATCH_SIZE,
-            sqlite_compression=False,  # Keep it simple for testing
+            sqlite_compression=False,
         ),
     )
 
@@ -390,6 +416,9 @@ async def main():
             await run_indexing()
         elif command == "build":
             await run_diskann_build()
+        elif command == "build-index":
+            await run_indexing()
+            await run_diskann_build()
         elif command == "search":
             await run_search_test()
         elif command == "all":
@@ -398,7 +427,7 @@ async def main():
             await run_search_test()
         else:
             logger.error("Unknown command: %s", command)
-            logger.error("Usage: python index_clueweb_sample.py [index|build|search|all]")
+            logger.error("Usage: python index_clueweb_hf.py [index|build|build-index|search|all]")
     else:
         await run_indexing()
         await run_diskann_build()

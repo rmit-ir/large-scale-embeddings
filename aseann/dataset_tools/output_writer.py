@@ -8,6 +8,7 @@ Creates:
 """
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import AsyncIterator, Iterator, Optional, Callable, Awaitable, Union
 import asyncio
@@ -33,8 +34,39 @@ class OutputConfig:
     compression_level: int = 5
     batch_size: int = 50
     sqlite_cache_size_mb: int = 2000
-    prefetch_batches: int = 100
-    sqlite_commit_every: int = 100
+    prefetch_batches: Optional[int] = None
+    sqlite_commit_every: Optional[int] = None
+
+
+def _infer_num_gpus() -> int:
+    embed_gpus = os.environ.get("EMBED_GPUS")
+    if embed_gpus is not None:
+        normalized = embed_gpus.strip().lower()
+        if normalized in ("", "auto", "all"):
+            pass
+        elif normalized in ("cpu", "none", "off"):
+            return 0
+        else:
+            return len([part for part in embed_gpus.split(",") if part.strip()])
+
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible is not None:
+        normalized = cuda_visible.strip()
+        if normalized == "" or normalized.lower() in ("none", "void", "off", "cpu"):
+            return 0
+        return len([part for part in normalized.split(",") if part.strip()])
+
+    return 1
+
+
+def _apply_output_defaults(config: OutputConfig) -> None:
+    if config.prefetch_batches is None or config.sqlite_commit_every is None:
+        num_gpus = _infer_num_gpus()
+        default_value = config.batch_size * num_gpus * 100
+        if config.prefetch_batches is None:
+            config.prefetch_batches = default_value
+        if config.sqlite_commit_every is None:
+            config.sqlite_commit_every = default_value
 
 
 async def output_to_idx(
@@ -72,6 +104,7 @@ async def output_to_idx(
         output_dir/config.json: Metadata (num_docs, embedding_dim, etc.)
     """
     config = config or OutputConfig()
+    _apply_output_defaults(config)
     await asyncio.to_thread(
         _output_to_idx_threaded,
         output_dir,
@@ -87,6 +120,7 @@ def _output_to_idx_threaded(
     embed_fn: Callable[[list[str]], Awaitable[np.ndarray]],
     config: OutputConfig,
 ):
+    _apply_output_defaults(config)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
