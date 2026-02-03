@@ -314,9 +314,6 @@ async def run_indexing():
     if not CLUEWEB_ROOT.exists():
         raise FileNotFoundError(f"Dataset path not found: {CLUEWEB_ROOT}")
 
-    # Initialize embedder (loads model)
-    get_embedder()
-
     # Run indexing
     logger.info("Starting indexing...")
     await output_to_idx(
