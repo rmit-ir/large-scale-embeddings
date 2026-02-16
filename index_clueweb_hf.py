@@ -88,6 +88,11 @@ TRUST_REMOTE_CODE = os.environ.get("TRUST_REMOTE_CODE", "1").strip().lower() not
     "false",
     "no",
 }
+DISKANN_METRIC = os.environ.get("DISKANN_METRIC", "mips")
+DISKANN_R = int(os.environ.get("DISKANN_R", "64"))
+DISKANN_L = int(os.environ.get("DISKANN_L", "100"))
+DISKANN_BUILD_MEMORY_GB = int(os.environ.get("DISKANN_BUILD_MEMORY_GB", "64"))
+DISKANN_SEARCH_MEMORY_GB = int(os.environ.get("DISKANN_SEARCH_MEMORY_GB", "24"))
 
 
 # ============================================================================
@@ -147,7 +152,8 @@ class SentenceTransformerEmbedder:
                 try:
                     self.model[0].max_seq_length = MAX_TOKENS
                 except Exception:
-                    logger.warning("Failed to set max_seq_length=%s on model.", MAX_TOKENS)
+                    logger.warning(
+                        "Failed to set max_seq_length=%s on model.", MAX_TOKENS)
             else:
                 logger.info("Set max_seq_length=%s", MAX_TOKENS)
         logger.info("Model loaded.")
@@ -172,7 +178,8 @@ class SentenceTransformerEmbedder:
                 if isinstance(prompts, dict) and prompt_name in prompts:
                     encode_kwargs["prompt_name"] = prompt_name
                 else:
-                    available = list(prompts.keys()) if isinstance(prompts, dict) else "n/a"
+                    available = list(prompts.keys()) if isinstance(
+                        prompts, dict) else "n/a"
                     logger.warning(
                         "QUERY_PROMPT_NAME=%s not found in model.prompts (available=%s). "
                         "Encoding queries without a prompt.",
@@ -353,11 +360,11 @@ async def run_diskann_build():
         binary_file=OUTPUT_DIR / "embeds.bin",
         output_dir=OUTPUT_DIR / "index",
         config=DiskANNConfig(
-            metric="mips",
-            R=32,
-            L=50,
-            build_memory_gb=4,
-            search_memory_gb=2,
+            metric=DISKANN_METRIC,
+            R=DISKANN_R,
+            L=DISKANN_L,
+            build_memory_gb=DISKANN_BUILD_MEMORY_GB,
+            search_memory_gb=DISKANN_SEARCH_MEMORY_GB,
         ),
     )
     logger.info("Index build complete!")
@@ -380,7 +387,8 @@ async def run_search_test():
     logger.info("Testing %s queries...", len(queries))
 
     if not (OUTPUT_DIR / "index").exists():
-        raise FileNotFoundError("DiskANN index not found. Run the build step first.")
+        raise FileNotFoundError(
+            "DiskANN index not found. Run the build step first.")
 
     results = await search(
         index_dir=OUTPUT_DIR,
@@ -437,7 +445,8 @@ async def main():
             await run_search_test()
         else:
             logger.error("Unknown command: %s", command)
-            logger.error("Usage: python index_clueweb_hf.py [index|build|build-index|search|all]")
+            logger.error(
+                "Usage: python index_clueweb_hf.py [index|build|build-index|search|all]")
     else:
         await run_indexing()
         await run_diskann_build()
